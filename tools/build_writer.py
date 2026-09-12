@@ -397,7 +397,12 @@ async function svc(path, payload, raw, filename){
   else { opt.headers = { 'Content-Type':'application/json' }; opt.body = JSON.stringify(payload||{}); }
   let res;
   try{ res = await fetch(apiBase()+path, opt); }
-  catch(e){ throw new Error('连不上本地服务（'+apiBase()+'）。请先运行：python tools/writer_server.py'); }
+  catch(e){
+    const remote = !['127.0.0.1','localhost'].includes(location.hostname);
+    throw new Error(remote
+      ? '连不上本地服务。① 确认已运行 start-writer.bat 或 python tools/writer_server.py；② 若已在运行，可能是浏览器拦截了"线上页面 → 本机服务"的请求，最稳的做法是直接打开 http://127.0.0.1:8787/writer.html 使用（同源，不受拦截）'
+      : '连不上本地服务（'+apiBase()+'）。请先运行：python tools/writer_server.py');
+  }
   const txt = await res.text();
   let json = null; try{ json = JSON.parse(txt); }catch(e){}
   if(!res.ok){

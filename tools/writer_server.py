@@ -253,12 +253,31 @@ def run_script(name, *argv):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "KepuWriter/1.1"
+    server_version = "KepuWriter/1.2"
+
+    # 允许来自线上页面（GitHub Pages 等）的跨域调用。
+    # 背景：https 页面调 http://127.0.0.1 属于"公网 → 私有网络"请求，
+    # 浏览器会先发 OPTIONS 预检；服务端必须回 CORS 头并显式允许私有网络，
+    # 否则 fetch 一定失败（这是线上页面调不到本地服务的真正原因）。
+    CORS_HEADERS = (
+        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+        ("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Filename-B64"),
+        ("Access-Control-Max-Age", "86400"),
+        ("Access-Control-Allow-Private-Network", "true"),
+    )
 
     def log_message(self, fmt, *args):
         code = str(args[1] if len(args) > 1 else "")
         if code.startswith(("4", "5")):
             sys.stderr.write("  %s\n" % (fmt % args))
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        for k, v in self.CORS_HEADERS:
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     # ---------------------------------------------------------- 静态
     def do_GET(self):
@@ -282,6 +301,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in self.CORS_HEADERS:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
@@ -377,6 +398,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        for k, v in self.CORS_HEADERS:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
