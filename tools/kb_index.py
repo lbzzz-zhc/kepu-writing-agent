@@ -91,12 +91,14 @@ def main():
                 open(path, "w", encoding="utf-8").write(text)
                 changed += 1
         rows.append({
+            "_counted": counted,
             "序号": 0, "文件名": f, "标题": meta.get("title", ""),
             "发布日期": meta.get("published", ""), "文体码": meta.get("genre", ""),
             "是否原创标": meta.get("original_mark", "待确认"),
             "署名方式": meta.get("byline", "待确认"),
             "正文净字数": n_chars, "可解析性": meta.get("parse_quality", ""),
-            "图片承载信息": "偏高" if int(meta.get("images") or 0) > 20 else "中",
+            "图片承载信息": (lambda n: "偏高" if n > 20 else ("中" if n else "已清理"))
+                          (int(meta.get("images_cleared") or meta.get("images") or 0)),
             "来源模块": meta.get("src_name") or ("有" if re.search(
                 r"^(内容来源|内容参考)", body, re.M) else "无"),
             "判定": "采纳",
@@ -104,14 +106,16 @@ def main():
         })
         print(f"{f[:44]:<46} {n_chars:>6} 字  {'计入' if counted else '排除'}{flag}")
 
-    tot = sum(r["正文净字数"] for r in rows if "排除" not in r["备注"])
-    print(f"\n共 {len(rows)} 篇（计入 {sum(1 for r in rows if '排除' not in r['备注'])} 篇，"
+    tot = sum(r["正文净字数"] for r in rows if r["_counted"])
+    nct = sum(1 for r in rows if r["_counted"])
+    print(f"\n共 {len(rows)} 篇（计入 {nct} 篇，排除 {len(rows)-nct} 篇，"
           f"合计 {tot} 字）")
 
     if args.make_csv:
         out = os.path.join(args.kbd, "语料清单.csv")
         with open(out, "w", newline="", encoding="utf-8-sig") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+            fields = [k for k in rows[0] if not k.startswith("_")]
+            w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
             for i, r in enumerate(sorted(rows, key=lambda x: x["发布日期"]), 1):
                 r["序号"] = i

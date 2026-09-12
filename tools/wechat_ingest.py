@@ -82,29 +82,102 @@ def fetch(url, timeout=25):
 
 
 # ---------------------------------------------------------------- HTML → 文本
-def _strip_tags(fragment):
+IMG_TOKEN = "\x00IMG\x00"
+BOLD_PATS = (
+    r"(?is)<strong[^>]*>(.*?)</strong>",
+    r"(?is)<b[^>]*>(.*?)</b>",
+    r"(?is)<span[^>]*font-weight\s*:\s*(?:bold|700|800|900)[^>]*>(.*?)</span>",
+)
+ATTR_CAPTION = re.compile(r"^(图片来源|图源|图片来自|来源图)[:：]")
+CJK_OR_WORD = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
+
+
+def _cjk(s):
+    return len(re.findall(r"[\u4e00-\u9fff]", s))
+
+
+def html_to_lines(fragment, keep_images=False, keep_captions=False):
+    """把微信正文 HTML 转成"排版好的纯文本"行列表。
+
+    规则：
+      · 去图片：默认不保留图片占位，也不保留图注（可用开关保留）
+      · 还原小标题：整行加粗且短 → 写成 **小标题**；行内零星加粗 → 抹平（不污染正文）
+      · 不做 NFKC 归一化，保护全角标点这一层风格特征
+    返回 (lines, stats)
+    """
+    stats = {"images": 0, "captions_dropped": 0, "captions_kept": [], "headings": 0}
     fragment = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", "", fragment)
+
     # Markdown 图片语法（docx→md 转换会带来 ![](data:image...) 这类噪音）
-    fragment = re.sub(r"(?s)!\[[^\]]*\]\([^)]*\)", "\n[[图片]]\n", fragment)
-    fragment = re.sub(r"(?is)<img[^>]*>", "\n[[图片]]\n", fragment)
+    fragment = re.sub(r"(?s)!\[[^\]]*\]\([^)]*\)", "\n" + IMG_TOKEN + "\n", fragment)
+    # 图片 → 令牌（保留位置信息，便于判断图注）
+    fragment = re.sub(r"(?is)<img[^>]*>", "\n" + IMG_TOKEN + "\n", fragment)
+    stats["images"] = fragment.count(IMG_TOKEN)
+
+    # 加粗 → **...**（先还原再剥标签，才能保住"哪些字是加粗的"这一信息）
+    for pat in BOLD_PATS:
+        fragment = re.sub(pat, r"**\1**", fragment)
+
     fragment = re.sub(r"(?i)<br\s*/?>", "\n", fragment)
     fragment = re.sub(r"(?i)</(p|section|div|li|tr|h[1-6]|blockquote)>", "\n", fragment)
     fragment = re.sub(r"(?s)<[^>]+>", "", fragment)
     fragment = htmllib.unescape(fragment)
-    lines = []
-    for line in fragment.split("\n"):
-        # 注意：不要做 NFKC 归一化——它会把全角标点（，。！？）压成半角，
-        # 破坏标点这一层风格特征。只清零宽字符与多余空白。
-        line = line.replace("\u200b", "").replace("\ufeff", "")
-        line = re.sub(r"[ \t\u3000]+", " ", line).strip()
-        if line:
-            lines.append(line)
-    # 去掉连续重复行（微信排版常产生重复层）
+
+    # 切成条目，区分"图片位置"与"文本"
+    entries = []
+    for chunk in fragment.split("\n"):
+        piece = chunk.replace(IMG_TOKEN, "")
+        piece = piece.replace("\u200b", "").replace("\ufeff", "")
+        piece = re.sub(r"[ \t\u3000]+", " ", piece).strip()
+        if chunk.count(IMG_TOKEN):
+            entries.append(("img", ""))
+        if piece:
+            entries.append(("text", piece))
+
+    # 图注判定：紧邻图片位置、长度 ≤45、不以句号结尾、不含标准号/书名号
+    def is_caption(idx):
+        s = entries[idx][1]
+        if not s or len(s) > 45 or s.endswith("。"):
+            return False
+        if "《" in s or re.search(r"(GB|ISO|T/[A-Z])", s):
+            return False
+        near = [entries[j][0] for j in (idx - 1, idx + 1) if 0 <= j < len(entries)]
+        return "img" in near
+
     out = []
-    for line in lines:
-        if not out or out[-1] != line:
-            out.append(line)
-    return out
+    for i, (kind, s) in enumerate(entries):
+        if kind == "img":
+            continue
+        if ATTR_CAPTION.match(s) or (not keep_captions and is_caption(i)):
+            stats["captions_dropped"] += 1
+            if len(stats["captions_kept"]) < 8:
+                stats["captions_kept"].append(s[:40])
+            continue
+        # 折叠嵌套加粗产生的重复标记（<b><strong>…</strong></b> → ****x****）
+        s = re.sub(r"\*{2,}", "**", s)
+        # 整行加粗且短 → 小标题；否则抹平加粗，避免行内强调污染正文
+        m = re.fullmatch(r"\*\*(.+?)\*\*", s, re.S)
+        if m and len(m.group(1)) <= 24 and _cjk(m.group(1)) >= 2:
+            s = "**" + re.sub(r"\*+", "", m.group(1)).strip() + "**"
+            stats["headings"] += 1
+        else:
+            s = re.sub(r"\*+", "", s).strip()
+        # 去图后残留的孤立符号行（如孤零零一个 📖）不入库
+        if s and not (len(s) <= 4 and not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", s)):
+            out.append(s)
+
+    # 去掉连续重复行（微信排版常产生重复层）
+    lines = []
+    for line in out:
+        if not lines or lines[-1] != line:
+            lines.append(line)
+    return lines, stats
+
+
+def _strip_tags(fragment):
+    """兼容旧调用：只取纯文本，不保留加粗、不保留图片。"""
+    lines, _ = html_to_lines(fragment, keep_images=False, keep_captions=True)
+    return lines
 
 
 def extract_wechat(html):
@@ -157,23 +230,25 @@ def extract_wechat(html):
     return info
 
 
-def _extract_js_content(html):
+def _extract_js_content(html, keep_images=False, keep_captions=False):
     m = re.search(r'(?is)<div[^>]*id="js_content"[^>]*>', html)
     if not m:
-        return ([], 0)
+        return ([], 0, {})
     start = m.end()
-    depth, i, end = 1, start, len(html)
+    depth, end = 1, len(html)
     for tag in re.finditer(r"(?i)<(/?)div\b[^>]*>", html[start:]):
         depth += -1 if tag.group(1) else 1
         if depth == 0:
             end = start + tag.start()
             break
     region = html[start:end]
-    images = len(re.findall(r"(?is)<img[^>]*>", region))
-    return (_strip_tags(region), images)
+    lines, stats = html_to_lines(region, keep_images=keep_images,
+                                 keep_captions=keep_captions)
+    return (lines, stats.get("images", 0), stats)
 
 
-def _generic_body(html):
+def _generic_body(html, keep_images=False, keep_captions=False):
+    """非微信页的兜底提取。始终返回 lines（不返回 stats）。"""
     container = html
     m = re.search(r"(?is)<article[^>]*>(.*?)</article>", html)
     if m:
@@ -181,18 +256,22 @@ def _generic_body(html):
     else:
         ps = re.findall(r"(?is)<p[^>]*>(.*?)</p>", html)
         if len(ps) >= 5:
-            return _strip_tags("\n".join(ps))
-    return _strip_tags(container)
+            return html_to_lines("\n".join(ps), keep_images, keep_captions)[0]
+    return html_to_lines(container, keep_images, keep_captions)[0]
 
 
 # ---------------------------------------------------------------- 元数据判定
+def _flat(lines):
+    """去掉加粗标记后再统计，保证与历史字数口径一致（**不占位**）。"""
+    return re.sub(r"\*{2,}", "", "".join(lines))
+
+
 def net_chars(lines):
-    text = "".join(lines)
-    return len(re.sub(r"\s", "", text))
+    return len(re.sub(r"\s", "", _flat(lines)))
 
 
 def cjk_count(lines):
-    return len(re.findall(r"[\u4e00-\u9fff]", "".join(lines)))
+    return len(re.findall(r"[\u4e00-\u9fff]", _flat(lines)))
 
 
 def guess_genre(title, lines):
