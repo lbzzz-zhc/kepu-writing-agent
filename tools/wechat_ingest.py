@@ -89,6 +89,14 @@ BOLD_PATS = (
     r"(?is)<span[^>]*font-weight\s*:\s*(?:bold|700|800|900)[^>]*>(.*?)</span>",
 )
 ATTR_CAPTION = re.compile(r"^(图片来源|图源|图片来自|来源图)[:：]")
+# 图片版权/图注署名
+CREDIT_PAT = re.compile(r"(图片来源|图源|图片来自|来源图|图注|图片拍摄|摄影)[:：]")
+# 图注典型形态：以标准号/编号开头，后接冒号与指标名（如 "GB/T 41001-2021：物理力学性能要求"）
+STDNO_CAPTION = re.compile(
+    r"^(?:GB/?T?|ISO|IEC|DBS?|SB/T|QB/T|NY/T|T/[A-Z]{2,8}|JJF)"
+    r"[\s\d./\u2010-\u2015\-]*[:：]")
+# 以"见图/下图"收尾，或整行就是"（图N）"
+REF_FIG_PAT = re.compile(r"(见图|见下图|见右图|见左图|如下图所示|如下表)$|^\(?图\s?\d+\)?$")
 CJK_OR_WORD = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
 
 
@@ -134,15 +142,20 @@ def html_to_lines(fragment, keep_images=False, keep_captions=False):
         if piece:
             entries.append(("text", piece))
 
-    # 图注判定：紧邻图片位置、长度 ≤45、不以句号结尾、不含标准号/书名号
+    # 图注判定：**保守三特征**（与 kb_clean.py 保持一致）
+    # 曾用"短 + 不以句号结尾 + 紧邻图片"，实测会误删「选购注意事项」「认清标准」
+    # 这类真实小标题——微信排版里小标题后面紧跟图片很常见。
     def is_caption(idx):
         s = entries[idx][1]
-        if not s or len(s) > 45 or s.endswith("。"):
+        if not s or len(s) > 60:
             return False
-        if "《" in s or re.search(r"(GB|ISO|T/[A-Z])", s):
+        if re.search(r"^(内容来源|内容参考|资料来源|参考资料)[:：]?$", s):
             return False
-        near = [entries[j][0] for j in (idx - 1, idx + 1) if 0 <= j < len(entries)]
-        return "img" in near
+        if CREDIT_PAT.search(s) or REF_FIG_PAT.search(s):
+            return True
+        if STDNO_CAPTION.match(s):
+            return True
+        return False
 
     out = []
     for i, (kind, s) in enumerate(entries):
@@ -174,9 +187,10 @@ def html_to_lines(fragment, keep_images=False, keep_captions=False):
     return lines, stats
 
 
-def _strip_tags(fragment):
-    """兼容旧调用：只取纯文本，不保留加粗、不保留图片。"""
-    lines, _ = html_to_lines(fragment, keep_images=False, keep_captions=True)
+def _strip_tags(fragment, keep_captions=False):
+    """兼容旧调用：只取纯文本，不保留图片（默认也不保留图注）。"""
+    lines, _ = html_to_lines(fragment, keep_images=False,
+                             keep_captions=keep_captions)
     return lines
 
 
