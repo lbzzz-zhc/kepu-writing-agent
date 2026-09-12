@@ -129,7 +129,31 @@ a{color:var(--teal)}
     <h2>最终成稿</h2>
     <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px" id="finalMeta"></div>
     <textarea id="finalText" readonly></textarea>
-    <div class="tools"><button class="btn" id="copy">复制成稿</button></div>
+
+    <div class="card" style="background:#FBFBF9;margin:14px 0 0">
+      <h2 style="margin-bottom:6px">按 Word 排版输出</h2>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+        成稿里带 Markdown 符号（<code>##</code>、<code>**</code>），直接粘进 Word 会显示成符号。
+        下面三个出口会自动清理并套上排版。
+      </div>
+      <div class="tools">
+        <button class="btn" id="copyRich">复制「带格式」→ 粘进 Word</button>
+        <button class="btn ghost" id="copyPlain2">复制纯文本</button>
+        <button class="btn ghost" id="dlDoc">下载 Word 文档（.doc）</button>
+        <label style="color:var(--ink);font-size:13px;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="indent" style="width:auto"> 首行缩进 2 字符
+        </label>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">
+        第 1 行作居中标题，短行作小标题（加粗、段前后留白），其余作正文。
+      </div>
+    </div>
+
+    <details style="margin-top:14px" open>
+      <summary>排版预览（粘进 Word 大致就是这个样子）</summary>
+      <div id="wordPreview" style="margin-top:10px;background:#fff;border:1px solid var(--line);
+        border-radius:8px;padding:18px 22px"></div>
+    </details>
   </div>
 
   <div class="card" id="ingCard">
@@ -465,9 +489,10 @@ async function run(){
     }
 
     $('#final').style.display='block';
-    $('#finalText').textContent = final;
+    $('#finalText').value = final;
     const chars = final.replace(/\s/g,'').length;
     $('#finalMeta').textContent = `约 ${chars} 字　·　变体 ${v.variant}　·　${needFix?'经一轮修订':'三审直通'}`;
+    previewWord();
     log('完成。成稿已生成。');
     flash('成稿已生成');
     $('#final').scrollIntoView({behavior:'smooth'});
@@ -489,15 +514,97 @@ async function testConn(){
   }catch(e){ flash('连接失败：' + e.message, true); }
 }
 
-function copyFinal(){
-  const t = $('#finalText').textContent;
-  const done = ()=>flash('成稿已复制到剪贴板');
-  if(navigator.clipboard) navigator.clipboard.writeText(t).then(done).catch(()=>fb(t,done));
-  else fb(t,done);
+/* ---------------- 成稿输出：Word 友好排版 ---------------- */
+function mdToPlain(t){
+  return (t||'')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/^\s*[-*+]\s+/gm, '· ')
+    .replace(/^\s*\d+\.\s+/gm, m=>m)
+    .replace(/^\s*>\s?/gm, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
+function plainLines(t){
+  return mdToPlain(t).split('\n').map(s=>s.trim()).filter(s=>s.length);
+}
+/* 把成稿转成 Word 友好的 HTML：第 1 行作标题，短行/原文 ## 行作小标题 */
+function buildWordHtml(indent){
+  const lines = plainLines($('#finalText').value);
+  if(!lines.length) return '';
+  // 小标题判定：短行、不以句末标点结尾；排除列表项、来源模块、以冒号收尾的行
+  const isHead = (s, i) => i>0 && s.length<=22
+    && !/[。；，,;：:]$/.test(s)
+    && !s.startsWith('·') && !s.startsWith('内容') && !/^\d+[.、]/.test(s);
+  const bodyStyle = 'font-family:"微软雅黑",sans-serif;font-size:11pt;line-height:1.75;'
+    + 'margin:0 0 8pt;' + (indent ? 'text-indent:2em;' : '');
+  const out = [];
+  lines.forEach((s, i)=>{
+    if(i===0){
+      out.push(`<p style="font-family:\"微软雅黑\",sans-serif;font-size:16pt;font-weight:bold;`
+        + `text-align:center;line-height:1.5;margin:0 0 16pt">${esc(s)}</p>`);
+    } else if(isHead(s, i)){
+      out.push(`<p style="font-family:\"微软雅黑\",sans-serif;font-size:13pt;font-weight:bold;`
+        + `line-height:1.6;margin:14pt 0 8pt">${esc(s)}</p>`);
+    } else {
+      out.push(`<p style="${bodyStyle}">${esc(s)}</p>`);
+    }
+  });
+  return '<html><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1"></head>'
+    + '<body style="font-family:\"微软雅黑\",sans-serif;font-size:11pt;line-height:1.75">'
+    + out.join('') + '</body></html>';
+}
+function previewWord(){
+  const html = buildWordHtml($('#indent').checked);
+  $('#wordPreview').innerHTML = html
+    ? html.replace(/<\/?html[^>]*>|<\/?head[^>]*>|<\/?body[^>]*>|<meta[^>]*>/g,'')
+    : '<p class="muted">还没有成稿。</p>';
+}
+async function copyRich(){
+  const html = buildWordHtml($('#indent').checked);
+  const text = mdToPlain($('#finalText').value);
+  if(!html){ flash('还没有成稿', true); return; }
+  try{
+    if(window.ClipboardItem && navigator.clipboard && navigator.clipboard.write){
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([html], {type:'text/html'}),
+        'text/plain': new Blob([text], {type:'text/plain'})
+      })]);
+      flash('已复制「带格式」版本 —— 粘到 Word 里直接是标题+正文');
+      return;
+    }
+    throw new Error('clipboard-unsupported');
+  }catch(e){
+    fb(text, ()=>flash('浏览器不支持富文本复制，已改为复制纯文本（无 Markdown 符号）'));
+  }
+}
+function copyPlain(){
+  const text = mdToPlain($('#finalText').value);
+  fb(text, ()=>flash('已复制纯文本（Markdown 符号已清理）'));
+}
+function downloadDoc(){
+  const html = buildWordHtml($('#indent').checked);
+  if(!html){ flash('还没有成稿', true); return; }
+  const name = (plainLines($('#finalText').value)[0] || '成稿').replace(/[\\/:*?"<>|]/g,'').slice(0,40);
+  const blob = new Blob(['\ufeff', html], {type:'application/msword'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name + '.doc';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  flash('已下载 Word 文档：' + name + '.doc');
+}
+
+function copyFinal(){ copyRich(); }
 function fb(t,done){
   const ta=document.createElement('textarea'); ta.value=t; document.body.appendChild(ta);
-  ta.select(); try{document.execCommand('copy'); done();}catch(e){alert('请手动选中复制');}
+  ta.select(); try{document.execCommand('copy'); done&&done();}catch(e){alert('请手动选中复制');}
   document.body.removeChild(ta);
 }
 function toggleSet(){
@@ -608,20 +715,25 @@ async function rebuild(){
 
 loadCfg();
 renderSteps();
-$('#go').addEventListener('click', run);
-$('#save').addEventListener('click', saveCfg);
-$('#test').addEventListener('click', testConn);
-$('#copy').addEventListener('click', copyFinal);
-$('#tog').addEventListener('click', toggleSet);
+/* 空值保护：某个元素不存在时不要连带废掉后面的绑定 */
+function on(sel, ev, fn){ const el = $(sel); if(el) el.addEventListener(ev, fn); }
+on('#go','click', run);
+on('#save','click', saveCfg);
+on('#test','click', testConn);
+on('#copyRich','click', copyRich);
+on('#copyPlain2','click', copyPlain);
+on('#dlDoc','click', downloadDoc);
+on('#indent','change', previewWord);
+on('#tog','click', toggleSet);
+on('#pickFile','click', ()=>$('#fileInput').click());
+on('#fileInput','change', e=>handleFiles(e.target.files));
+on('#ingGo','click', ingest);
+on('#svcCheck','click', checkSvc);
+on('#rebuild','click', rebuild);
+on('#material','dragover', e=>{ e.preventDefault(); e.currentTarget.style.borderColor='#0F6E56'; });
+on('#material','dragleave', e=>{ e.currentTarget.style.borderColor=''; });
+on('#material','drop', e=>{ e.preventDefault(); e.currentTarget.style.borderColor=''; handleFiles(e.dataTransfer.files); });
 $('#setbox').style.display='none';
-$('#pickFile').addEventListener('click', ()=>$('#fileInput').click());
-$('#fileInput').addEventListener('change', e=>handleFiles(e.target.files));
-$('#ingGo').addEventListener('click', ingest);
-$('#svcCheck').addEventListener('click', checkSvc);
-$('#rebuild').addEventListener('click', rebuild);
-$('#material').addEventListener('dragover', e=>{ e.preventDefault(); e.currentTarget.style.borderColor='#0F6E56'; });
-$('#material').addEventListener('dragleave', e=>{ e.currentTarget.style.borderColor=''; });
-$('#material').addEventListener('drop', e=>{ e.preventDefault(); e.currentTarget.style.borderColor=''; handleFiles(e.dataTransfer.files); });
 
 </script>
 </body>
