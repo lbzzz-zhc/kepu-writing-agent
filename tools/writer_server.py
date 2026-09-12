@@ -1,50 +1,272 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-本地写作台小服务：既托管页面，又做 API 转接（解决浏览器跨域限制）。
+本地写作台小服务：托管页面 + API 转接 + 知识库读写。
 
 用法：
-  python writer_server.py                # 默认 http://127.0.0.1:8787
+  python writer_server.py                 # http://127.0.0.1:8787
   python writer_server.py --port 9000
-  python writer_server.py --site ../site
 
-它做两件事：
-  1. 把 site/ 目录当静态站点提供，浏览器访问 http://127.0.0.1:8787/writer.html
-  2. 把 POST /api/chat 的请求转发到你填写的 OpenAI 兼容接口
-     —— 请求由本机发出，所以不存在跨域问题；你的 API Key 不经过任何第三方服务器。
+它做四件事：
+  1. 把 docs/ 目录当静态站点提供（浏览器访问 /writer.html）
+  2. POST /api/chat      转发模型请求到你填的 OpenAI 兼容接口（绕开浏览器跨域）
+  3. POST /api/extract   解析上传的 docx / pdf / txt / md → 纯文本
+  4. POST /api/ingest    抓取微信公众号链接 → 写入 KB1 语料库 → 重算统计
+     POST /api/restat    重算语料特征（"自我总结"）
+     POST /api/rebuild   重新生成 docs/ 两个页面
 
-安全说明：服务只监听 127.0.0.1（本机），不对外网开放。
+为什么这些必须走本地服务：
+  浏览器出于安全策略无法直接读写磁盘，也无法跨域抓取 mp.weixin.qq.com。
+  本地服务在你自己机器上运行，只监听 127.0.0.1，不对外网开放。
+
+安全：仅监听回环地址；不接受任何外部写入路径（路径由本文件固定推导）。
 """
 
 import argparse
+import base64
 import json
 import os
+import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-SITE = "."
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+PROJECT = os.path.abspath(os.path.join(TOOLS, ".."))
+KB1 = os.path.join(PROJECT, "10_知识库", "01_历史语料库")
+DOCS = os.path.join(PROJECT, "docs")
+SITE = DOCS
 TIMEOUT = 180
+MAX_UPLOAD = 40 * 1024 * 1024
+
+sys.path.insert(0, TOOLS)
+
+
+# ---------------------------------------------------------------- 文本抽取
+def extract_text(filename, raw):
+    """按扩展名抽取纯文本。优先 markitdown，回退标准库。返回 (text, method)"""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in (".txt", ".md", ".csv", ".tsv", ".json"):
+        for enc in ("utf-8", "gb18030", "utf-16"):
+            try:
+                return raw.decode(enc), "直接解码 " + enc
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", "replace"), "直接解码(容错)"
+
+    # 写临时文件交给 markitdown
+    import tempfile
+    tmp = os.path.join(tempfile.gettempdir(), "kepu_upload" + ext)
+    with open(tmp, "wb") as fh:
+        fh.write(raw)
+
+    try:
+        from markitdown import MarkItDown
+        text = MarkItDown().convert(tmp).text_content
+        if text and len(re.sub(r"\s", "", text)) >= 50:
+            return text, "markitdown"
+    except Exception:  # noqa: BLE001
+        pass
+
+    if ext in (".docx", ".doc", ".dotx"):
+        try:
+            return _docx_stdlib(tmp), "标准库(zip+xml)"
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"docx 解析失败：{exc}") from exc
+    if ext == ".pdf":
+        try:
+            return _pdf_stdlib(tmp), "标准库(zlib 流解析)"
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"pdf 解析失败：{exc}。建议安装 markitdown（pip install markitdown）"
+                "，或把正文复制粘贴进来") from exc
+    raise RuntimeError(f"暂不支持的文件类型：{ext}")
+
+
+def _docx_stdlib(path):
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        names = [n for n in z.namelist() if n in ("word/document.xml",)]
+        if not names:
+            raise RuntimeError("不是标准 docx（缺少 word/document.xml）")
+        xml = z.read("word/document.xml").decode("utf-8", "replace")
+    xml = re.sub(r"<w:tab[^>]*/>", "\t", xml)
+    xml = re.sub(r"<w:br[^>]*/>", "\n", xml)
+    xml = re.sub(r"</w:p>", "\n", xml)
+    xml = re.sub(r"<[^>]+>", "", xml)
+    import html as H
+    text = H.unescape(xml)
+    lines = [re.sub(r"[ \t\u3000]+", " ", l).strip() for l in text.splitlines()]
+    return "\n".join(l for l in lines if l)
+
+
+def _pdf_stdlib(path):
+    """基础 PDF 文本抽取：解压 FlateDecode 流后取 Tj/TJ 字符串。对扫描件无效。"""
+    import zlib
+    data = open(path, "rb").read()
+    chunks = []
+    for m in re.finditer(rb"stream\r?\n", data):
+        start = m.end()
+        end = data.find(b"endstream", start)
+        if end < 0:
+            continue
+        blob = data[start:end]
+        try:
+            blob = zlib.decompress(blob)
+        except Exception:  # noqa: BLE001
+            continue
+        for tm in re.finditer(rb"\((?:\\.|[^\\()])*\)", blob):
+            s = tm.group(0)[1:-1]
+            s = re.sub(rb"\\([()\\])", rb"\1", s)
+            chunks.append(s)
+        if len(b"".join(chunks)) > 200000:
+            break
+    if not chunks:
+        # 未压缩流（无 FlateDecode）的 PDF：直接在原始数据里扫 Tj/TJ
+        for tm in re.finditer(rb"\((?:\\.|[^\\()])*\)\s*(?:Tj|TJ|')", data):
+            s = tm.group(0)
+            s = s[: s.rfind(b")") + 1]
+            chunks.append(re.sub(rb"\\([()\\])", rb"\1", s[1:-1]))
+    if not chunks:
+        raise RuntimeError("未取到文本层（可能是扫描件或加密 PDF）")
+    raw = b" ".join(chunks)
+    for enc in ("utf-8", "gb18030", "latin-1"):
+        try:
+            txt = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        txt = raw.decode("utf-8", "replace")
+    return re.sub(r"[ \t]+", " ", txt).strip()
+
+
+# ---------------------------------------------------------------- 语料读写
+def api_ingest(urls, dry_run=False, genre_override=""):
+    import wechat_ingest as W
+    os.makedirs(KB1, exist_ok=True)
+    existing = [f for f in os.listdir(KB1) if f.startswith("KB1-") and f.endswith(".md")]
+    results = []
+    nxt = 1
+    for u in urls:
+        u = u.strip()
+        if not u:
+            continue
+        item = {"url": u, "ok": False, "msg": ""}
+        try:
+            info, last_err, html = None, "", ""
+            for attempt in range(1, W.FETCH_ATTEMPTS + 1):
+                try:
+                    html = W.fetch(u)
+                except Exception as exc:  # noqa: BLE001
+                    last_err = f"网络异常：{exc}"
+                    continue
+                cand = W.extract_wechat(html)
+                if cand.get("fail"):
+                    last_err = cand["fail"]
+                    if cand["fail"] in ("文章已被删除", "内容违规不可见", "链接参数错误"):
+                        break
+                    continue
+                if W.cjk_count(cand["lines"]) >= W.MIN_CJK:
+                    info = cand
+                    break
+                last_err = "正文过少（疑似反爬薄页面）"
+            if info is None:
+                item["msg"] = f"抓取失败：{last_err or '未知原因'}"
+                results.append(item)
+                continue
+
+            genre = (genre_override or "").strip().upper() or W.guess_genre(info["title"], info["lines"])
+            date = info.get("date") or ""
+            stamp = date.replace("-", "")[:6] or "000000"
+            idx = f"{len(existing) + nxt:02d}"
+            sid = f"KB1-{genre}-{stamp}-{idx}"
+            head = re.split(r"[｜|：:，,。？！?!\-—]", info["title"] or "untitled")[0]
+            safe = re.sub(r"[^\w\u4e00-\u9fff]+", "_", head)[:24].strip("_") or "untitled"
+            fname = f"{sid}_{safe}.md"
+            if not dry_run:
+                with open(os.path.join(KB1, fname), "w", encoding="utf-8") as fh:
+                    fh.write(W.to_markdown(info, u, genre, date, sid, authority="微信发布版"))
+            nxt += 1
+            item.update({
+                "ok": True, "title": info["title"], "genre": genre, "date": date,
+                "chars": W.net_chars(info["lines"]), "cjk": W.cjk_count(info["lines"]),
+                "file": fname, "id": sid, "dry_run": dry_run,
+                "msg": "已入库" if not dry_run else "试跑（未写文件）",
+            })
+        except Exception as exc:  # noqa: BLE001
+            item["msg"] = f"异常：{exc}"
+        results.append(item)
+    return results
+
+
+def api_restat():
+    import corpus_digest as C
+    files = sorted(f for f in os.listdir(KB1) if f.startswith("KB1-") and f.endswith(".md"))
+    items = [C.parse(os.path.join(KB1, f)) for f in files]
+    counted = [i for i in items if i.get("counted", True)]
+    n = len(counted)
+    if not n:
+        return {"total": len(items), "counted": 0}
+
+    def hit(pred, pool=None):
+        pool = pool or counted
+        return sum(1 for i in pool if pred(i))
+
+    cs = sorted(i["chars"] for i in counted)
+    std = [i for i in counted if i["genre"] == "STD"]
+    metrics = [
+        {"name": "首段不含标准号 / 不含“标准·规定”", "hit": hit(lambda i: not i["first_has_std_no"] and not i["first_has_word"]), "total": n},
+        {"name": "零感叹号", "hit": hit(lambda i: i["excl"] == 0), "total": n},
+        {"name": "使用 emoji 锚点", "hit": hit(lambda i: i["emoji"] > 0), "total": n},
+        {"name": "标题带竖线（系列/栏目稿）", "hit": hit(lambda i: i["title_sep"]), "total": n},
+        {"name": "含问句式小标题", "hit": hit(lambda i: i["head_q"] > 0), "total": n},
+        {"name": "有来源清单模块（全库）", "hit": hit(lambda i: i["src_name"]), "total": n},
+        {"name": "有来源清单模块（仅 STD）", "hit": sum(1 for i in std if i["src_name"]), "total": len(std)},
+    ]
+    for m in metrics:
+        m["pct"] = round(100 * m["hit"] / max(m["total"], 1))
+        m["level"] = "R" if (m["hit"] >= 5 and m["pct"] >= 80) else ("T" if m["pct"] >= 40 else "O")
+    return {
+        "total": len(items), "counted": n,
+        "chars": {"p25": cs[n // 4], "p50": cs[n // 2], "p75": cs[3 * n // 4],
+                  "min": cs[0], "max": cs[-1]},
+        "genres": {g: sum(1 for i in counted if i["genre"] == g)
+                   for g in sorted({i["genre"] for i in counted})},
+        "metrics": metrics,
+        "latest": sorted(i["published"] for i in counted)[-3:],
+    }
+
+
+def features_path():
+    """统计缓存的位置由 KB1 的上级目录推导，避免测试时写错项目文件。"""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(KB1))),
+                        "_corpus_features.json")
+
+
+def run_script(name, *argv):
+    p = os.path.join(TOOLS, name)
+    out = subprocess.run([sys.executable, p, *argv], capture_output=True, text=True, cwd=TOOLS)
+    return out.returncode, (out.stdout or "")[-3000:], (out.stderr or "")[-1500:]
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "KepuWriter/1.0"
+    server_version = "KepuWriter/1.1"
 
-    def log_message(self, fmt, *args):  # 安静一点，只报错误
-        if str(args[1] if len(args) > 1 else "").startswith(("4", "5")):
+    def log_message(self, fmt, *args):
+        code = str(args[1] if len(args) > 1 else "")
+        if code.startswith(("4", "5")):
             sys.stderr.write("  %s\n" % (fmt % args))
 
-    # ---------------------------------------------------------- 静态文件
+    # ---------------------------------------------------------- 静态
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path in ("/", ""):
             path = "/index.html"
         target = os.path.normpath(os.path.join(SITE, path.lstrip("/")))
-        if not target.startswith(os.path.abspath(SITE)):
-            self.send_error(403, "forbidden")
-            return
-        if not os.path.isfile(target):
+        if not target.startswith(os.path.abspath(SITE)) or not os.path.isfile(target):
             self.send_error(404, "not found")
             return
         ctype = "text/html; charset=utf-8"
@@ -63,73 +285,127 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    # ---------------------------------------------------------- API 转接
+    # ---------------------------------------------------------- POST 路由
     def do_POST(self):
-        if self.path.split("?", 1)[0] != "/api/chat":
-            self.send_error(404, "not found")
-            return
-        length = int(self.headers.get("Content-Length") or 0)
+        path = self.path.split("?", 1)[0]
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/chat":
+                return self.h_chat()
+            if path == "/api/extract":
+                return self.h_extract()
+            if path == "/api/ingest":
+                return self.h_ingest()
+            if path == "/api/restat":
+                return self.h_json(200, api_restat())
+            if path == "/api/rebuild":
+                return self.h_rebuild()
+            self.send_error(404, "not found")
         except Exception as exc:  # noqa: BLE001
-            self._json(400, {"error": {"message": f"请求体不是合法 JSON：{exc}"}})
-            return
+            self.h_json(500, {"error": {"message": f"{type(exc).__name__}: {exc}"}})
 
+    # ---------------------------------------------------------- 各处理器
+    def h_chat(self):
+        payload = self._read_json()
         base = (payload.pop("_base", "") or "").rstrip("/")
         key = payload.pop("_key", "") or ""
         if not base:
-            self._json(400, {"error": {"message": "缺少 _base（接口地址）"}})
-            return
-
-        url = base + "/chat/completions"
+            return self.h_json(400, {"error": {"message": "缺少 _base（接口地址）"}})
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(url, data=body, method="POST", headers={
+        req = urllib.request.Request(base + "/chat/completions", data=body, method="POST", headers={
             "Content-Type": "application/json",
             "Authorization": "Bearer " + key,
             "Accept": "application/json",
         })
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-                raw = resp.read()
-            self._raw(200, raw)
+                self.h_raw(200, resp.read())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:800]
-            self._json(exc.code, {"error": {"message": f"上游接口返回 {exc.code}：{detail}"}})
+            self.h_json(exc.code, {"error": {"message": f"上游接口返回 {exc.code}：{detail}"}})
         except Exception as exc:  # noqa: BLE001
-            self._json(502, {"error": {"message": f"转发失败：{exc}"}})
+            self.h_json(502, {"error": {"message": f"转发失败：{exc}"}})
+
+    def h_extract(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_UPLOAD:
+            return self.h_json(413, {"error": {"message": "文件过大（上限 40MB）"}})
+        raw = self.rfile.read(length)
+        name_b64 = self.headers.get("X-Filename-B64") or ""
+        name = base64.b64decode(name_b64).decode("utf-8", "replace") if name_b64 else "upload.txt"
+        text, method = extract_text(name, raw)
+        self.h_json(200, {"name": name, "chars": len(re.sub(r"\s", "", text)),
+                          "method": method, "text": text})
+
+    def h_ingest(self):
+        payload = self._read_json()
+        urls = payload.get("urls") or []
+        if isinstance(urls, str):
+            urls = [u for u in re.split(r"[\s,]+", urls) if u.strip()]
+        if not urls:
+            return self.h_json(400, {"error": {"message": "没有可用的链接"}})
+        results = api_ingest(urls, dry_run=bool(payload.get("dry_run")),
+                             genre_override=str(payload.get("genre") or ""))
+        ok = sum(1 for r in results if r["ok"])
+        # 入库后重算统计 + 重建台账
+        restat = None
+        if ok and not payload.get("dry_run"):
+            run_script("kb_index.py", KB1, "--fix", "--csv")
+            run_script("corpus_digest.py", KB1, "--json", features_path())
+            restat = api_restat()
+        self.h_json(200, {"results": results, "ok": ok, "fail": len(results) - ok,
+                          "restat": restat, "kb1": KB1})
+
+    def h_rebuild(self):
+        a = run_script("build_site.py", "--project", PROJECT, "--out", DOCS)
+        b = run_script("build_writer.py", "--project", PROJECT, "--out", DOCS)
+        ok = a[0] == 0 and b[0] == 0
+        self.h_json(200 if ok else 500, {
+            "ok": ok, "site": a[1][-200:], "writer": b[1][-200:],
+            "hint": "页面已重建；刷新浏览器即可看到最新数据"
+                    if ok else f"重建失败：{a[2][-200:]} {b[2][-200:]}",
+        })
 
     # ---------------------------------------------------------- 工具
-    def _raw(self, code, data):
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            return json.loads(self.rfile.read(length) or b"{}")
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"请求体不是合法 JSON：{exc}") from exc
+
+    def h_raw(self, code, data):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
-    def _json(self, code, obj):
-        self._raw(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+    def h_json(self, code, obj):
+        self.h_raw(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
-    ap.add_argument("--site", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs"))
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--site", default=DOCS)
     args = ap.parse_args()
 
     global SITE
     SITE = os.path.abspath(args.site)
     if not os.path.isdir(SITE):
         print(f"[失败] 找不到站点目录：{SITE}", file=sys.stderr)
-        print("       先运行：python tools/build_site.py --project <工程根目录> --out <工程根目录>/docs",
-              file=sys.stderr)
         return 1
+    if not os.path.isdir(KB1):
+        print(f"[警告] 找不到语料库目录：{KB1}（入库功能将不可用）", file=sys.stderr)
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print("科普写作台已启动")
-    print(f"  页面：http://{args.host}:{args.port}/writer.html")
-    print(f"  知识库：http://{args.host}:{args.port}/index.html")
+    print(f"  写作台：http://{args.host}:{args.port}/writer.html")
+    print(f"  展示台：http://{args.host}:{args.port}/index.html")
     print(f"  站点目录：{SITE}")
+    print(f"  语料库：{KB1}")
+    print("  能力：模型转接 · 文件解析(docx/pdf) · 链接入库 · 统计重算 · 页面重建")
     print("  按 Ctrl+C 停止")
     try:
         srv.serve_forever()

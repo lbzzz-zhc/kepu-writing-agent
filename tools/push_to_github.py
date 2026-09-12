@@ -26,10 +26,28 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
 API = "https://api.github.com"
+
+
+def local_blob_sha(data):
+    """git blob 的 SHA-1（与 git hash-object 一致），用于跳过未改动文件。"""
+    import hashlib
+    h = hashlib.sha1()
+    h.update(b"blob %d\0" % len(data))
+    h.update(data)
+    return h.hexdigest()
+
+
+def remote_tree(gh, repo, tree_sha):
+    """拉取远端 tree，递归展开为 {path: blob_sha}。"""
+    if not tree_sha:
+        return {}
+    _, data = gh.call("GET", f"/repos/{repo}/git/trees/{tree_sha}?recursive=1")
+    return {e["path"]: e["sha"] for e in data.get("tree", []) if e.get("type") == "blob"}
 
 
 def token():
@@ -135,25 +153,47 @@ def main():
             print("  " + f)
         return 0
 
-    # 1) 逐个上传 blobs
-    tree = []
+    # 1) 增量上传 blobs：内容未变的文件复用远端已有 blob，避免重复上传与中途断连
+    remote = {}
+    base_tree_sha = None
+    if parent:
+        _, head_commit = gh.call("GET", f"/repos/{args.repo}/git/commits/{parent}")
+        base_tree_sha = head_commit.get("tree", {}).get("sha")
+        remote = remote_tree(gh, args.repo, base_tree_sha)
+        print(f"远端已有 {len(remote)} 个文件，将只上传有改动的")
+
+    tree, reused, uploaded = [], 0, 0
     for i, rel in enumerate(files, 1):
         path = os.path.join(args.root, rel)
         with open(path, "rb") as fh:
             raw = fh.read()
-        content = base64.b64encode(raw).decode("ascii")
-        _, blob = gh.call("POST", f"/repos/{args.repo}/git/blobs",
-                          {"content": content, "encoding": "base64"})
-        tree.append({"path": rel.replace(os.sep, "/"), "mode": "100644",
-                     "type": "blob", "sha": blob["sha"]})
-        if i % 10 == 0 or i == len(files):
-            print(f"  已上传 {i}/{len(files)}")
+        key = rel.replace(os.sep, "/")
+        sha = local_blob_sha(raw)
+        if remote.get(key) == sha:
+            tree.append({"path": key, "mode": "100644", "type": "blob", "sha": sha})
+            reused += 1
+            continue
+        for attempt in range(1, 4):
+            try:
+                _, blob = gh.call("POST", f"/repos/{args.repo}/git/blobs",
+                                  {"content": base64.b64encode(raw).decode("ascii"),
+                                   "encoding": "base64"})
+                break
+            except SystemExit:
+                if attempt == 3:
+                    raise
+                print(f"  [重试 {attempt}/3] {key}", file=sys.stderr)
+                time.sleep(2 * attempt)
+        tree.append({"path": key, "mode": "100644", "type": "blob", "sha": blob["sha"]})
+        uploaded += 1
+        if uploaded % 10 == 0:
+            print(f"  已上传 {uploaded} 个（复用 {reused} 个）")
+    print(f"blob 处理完成：新上传 {uploaded} 个，复用 {reused} 个")
 
     # 2) 建 tree
     payload = {"tree": tree}
     if parent:
-        _, head_commit = gh.call("GET", f"/repos/{args.repo}/git/commits/{parent}")
-        payload["base_tree"] = head_commit.get("tree", {}).get("sha")
+        payload["base_tree"] = base_tree_sha
     _, new_tree = gh.call("POST", f"/repos/{args.repo}/git/trees", payload)
     print(f"tree 已创建：{new_tree['sha'][:8]}")
 

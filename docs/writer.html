@@ -77,10 +77,14 @@ a{color:var(--teal)}
           <label style="color:var(--ink);font-size:13px"><input type="checkbox" id="f-proxy" style="width:auto"> 走本地代理端口</label>
         </div>
       </div>
+      <label>本地服务地址（留空则自动探测；本机服务为 127.0.0.1:8787）</label>
+      <input id="f-local" placeholder="http://127.0.0.1:8787">
       <div class="tools">
         <button class="btn" id="save">保存设置</button>
-        <button class="btn ghost" id="test">测试连接</button>
+        <button class="btn ghost" id="test">测试模型连接</button>
+        <button class="btn ghost" id="svcCheck">检测本地服务</button>
         <span id="flash"></span>
+        <span id="svcMsg" style="font-size:12.5px"></span>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:10px">
         兼容 DeepSeek / 通义 / 智谱 / Kimi / OpenAI 等任意 OpenAI 格式接口。若浏览器报跨域错误，
@@ -94,7 +98,16 @@ a{color:var(--teal)}
     <label>选题（一个主题，不要一串）</label>
     <input id="topic" placeholder="例：新国标下怎么挑儿童学习桌椅">
     <label>本次事实资料（标准原文 / 官方发布 / 权威报道 / 检测数据 —— 必须粘贴，缺了就停工）</label>
-    <textarea id="material" placeholder="把标准原文、官方通报、权威报道原文粘进来。资料越实，成稿越稳。"></textarea>
+    <textarea id="material" placeholder="把标准原文、官方通报、权威报道原文粘进来。资料越实，成稿越稳。&#10;也可以点下面的按钮上传 docx / pdf / txt，或直接把文件拖到这里。"></textarea>
+    <div class="tools">
+      <input type="file" id="fileInput" multiple accept=".docx,.doc,.dotx,.pdf,.txt,.md,.csv" style="display:none">
+      <button class="btn ghost sm" id="pickFile">上传资料文件（docx / pdf / txt）</button>
+      <span id="fileMsg" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:8px">
+      文件解析由本地服务完成（浏览器无法直接读盘）。若提示连不上，先运行
+      <code>python tools/writer_server.py</code>。扫描件 PDF 无文本层时解析会失败，请改为粘贴正文。
+    </div>
     <div class="row">
       <div><label>目标字数（可留空，默认 1300–1550）</label><input id="words" placeholder="1300–1550"></div>
     </div>
@@ -119,6 +132,35 @@ a{color:var(--teal)}
     <div class="tools"><button class="btn" id="copy">复制成稿</button></div>
   </div>
 
+  <div class="card" id="ingCard">
+    <h2>语料入库 · 让智能体学习新文章</h2>
+    <div class="notice">
+      把新的公众号文章链接粘进来，一键抓取并存入历史语料库，然后自动重算风格特征。
+      <b>此功能需要本地服务在运行</b>：<code>python tools/writer_server.py</code>。
+      浏览器不能写磁盘、也不能跨域抓微信链接，所以必须由本机服务代劳。
+    </div>
+    <label>微信公众号链接（一行一个，可批量）</label>
+    <textarea id="links" style="min-height:110px" placeholder="https://mp.weixin.qq.com/s/xxxxxxxx"></textarea>
+    <div class="row">
+      <div><label>文体码（不确定就留自动判断）</label>
+        <select id="ingGenre" style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;font-family:inherit;background:#FBFBF9;color:var(--ink)">
+          <option value="">自动判断</option>
+          <option>STD</option><option>AVOID</option><option>HEALTH</option><option>SAFETY</option><option>MISC</option>
+        </select>
+      </div>
+    </div>
+    <div class="tools">
+      <button class="btn" id="ingGo">抓取并入库</button>
+      <button class="btn ghost" id="rebuild">重建页面</button>
+      <span id="ingMsg" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+    <div id="ingOut"></div>
+    <div id="restatOut"></div>
+    <p class="small muted" style="margin-top:10px">
+      入库只进 KB1（仅用于风格）；新文章里的标准与数据<b>永远不作为</b>写作事实来源。
+    </p>
+  </div>
+
   <div class="card">
     <h2>为什么需要你自己的 API</h2>
     <div style="font-size:13px;color:var(--muted)">
@@ -139,11 +181,18 @@ const esc = s => String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt
 /* ---------------- 配置 ---------------- */
 const CFG_KEY = 'kepu_writer_cfg';
 function cfg(){ try{ return JSON.parse(localStorage.getItem(CFG_KEY))||{}; }catch(e){ return {}; } }
+function apiBase(){
+  const set = (cfg().local||'').replace(/\/+$/,'');
+  if(set) return set;
+  const h = location.hostname;
+  if(h==='127.0.0.1'||h==='localhost') return location.origin;
+  return 'http://127.0.0.1:8787';
+}
 function saveCfg(){
   localStorage.setItem(CFG_KEY, JSON.stringify({
     base: $('#f-base').value.trim(), key: $('#f-key').value.trim(),
     model: $('#f-model').value.trim(), temp: parseFloat($('#f-temp').value)||0.7,
-    useProxy: $('#f-proxy').checked
+    useProxy: $('#f-proxy').checked, local: $('#f-local').value.trim()
   }));
   flash('设置已保存在本机浏览器');
 }
@@ -154,6 +203,7 @@ function loadCfg(){
   $('#f-model').value = c.model || 'deepseek-chat';
   $('#f-temp').value = (c.temp==null?0.7:c.temp);
   $('#f-proxy').checked = !!c.useProxy;
+  $('#f-local').value = c.local || '';
 }
 function flash(msg, bad){
   const el = $('#flash'); el.textContent = msg;
@@ -166,7 +216,7 @@ async function callModel(messages, temperature){
   const c = cfg();
   if(!c.key){ throw new Error('未填写 API Key'); }
   if(!c.base || !c.model){ throw new Error('未填写接口地址或模型名'); }
-  const url = (c.useProxy ? '/api/chat' : c.base.replace(/\/+$/,'') + '/chat/completions');
+  const url = (c.useProxy ? apiBase() + '/api/chat' : c.base.replace(/\/+$/,'') + '/chat/completions');
   const body = { model: c.model, messages, temperature: (temperature==null?c.temp:temperature), stream: false };
   if(c.useProxy){ body._base = c.base; body._key = c.key; }
   const res = await fetch(url, {
@@ -455,6 +505,102 @@ function toggleSet(){
   b.style.display = b.style.display==='none' ? 'block' : 'none';
 }
 
+/* ---------------- 本地服务：文件解析 / 语料入库 / 重算 ---------------- */
+function svcMsg(el, msg, bad){ const e=$(el); e.textContent = msg; e.style.color = bad ? '#A32D2D' : '#0F6E56'; }
+async function svc(path, payload, raw, filename){
+  const opt = { method:'POST' };
+  if(raw){ opt.body = raw; opt.headers = { 'Content-Type':'application/octet-stream',
+            'X-Filename-B64': btoa(unescape(encodeURIComponent(filename||'upload.bin'))) }; }
+  else { opt.headers = { 'Content-Type':'application/json' }; opt.body = JSON.stringify(payload||{}); }
+  let res;
+  try{ res = await fetch(apiBase()+path, opt); }
+  catch(e){ throw new Error('连不上本地服务（'+apiBase()+'）。请先运行：python tools/writer_server.py'); }
+  const txt = await res.text();
+  let json = null; try{ json = JSON.parse(txt); }catch(e){}
+  if(!res.ok){
+    const m = (json && json.error && json.error.message) || txt.slice(0,300);
+    throw new Error(m);
+  }
+  return json || {};
+}
+
+async function checkSvc(){
+  svcMsg('#svcMsg','检测中…');
+  try{ const r = await svc('/api/restat', {});
+    svcMsg('#svcMsg', `本地服务正常 · 当前语料 ${r.counted} 篇`);
+    renderRestat(r, '#restatOut');
+  }catch(e){ svcMsg('#svcMsg', e.message, true); }
+}
+
+async function handleFiles(files){
+  if(!files || !files.length) return;
+  svcMsg('#fileMsg','解析中…');
+  const parts = [];
+  for(const f of files){
+    try{
+      const r = await svc('/api/extract', null, await f.arrayBuffer(), f.name);
+      parts.push(`【来自文件：${f.name}｜${r.method}｜${r.chars} 字】\n${r.text}`);
+    }catch(e){
+      parts.push(`【${f.name} 解析失败：${e.message}】`);
+    }
+  }
+  const ta = $('#material');
+  ta.value = (ta.value ? ta.value.replace(/\s*$/,'') + '\n\n' : '') + parts.join('\n\n');
+  svcMsg('#fileMsg', `已并入资料区（${files.length} 个文件）`);
+}
+
+async function ingest(){
+  const raw = $('#links').value.trim();
+  if(!raw){ svcMsg('#ingMsg','请先粘贴链接', true); return; }
+  const btn = $('#ingGo'); btn.disabled = true; btn.textContent = '抓取中…';
+  svcMsg('#ingMsg','正在抓取并入库…');
+  try{
+    const r = await svc('/api/ingest', { urls: raw, genre: $('#ingGenre').value });
+    const rows = r.results.map(it => it.ok
+      ? `<tr><td><span class="tag t-r">已入库</span></td><td>${esc(it.title)}</td>
+         <td>${esc(it.genre)}</td><td>${it.chars} 字</td><td class="muted small">${esc(it.file)}</td></tr>`
+      : `<tr><td><span class="tag t-bad">失败</span></td><td colspan="4" class="muted">${esc(it.msg)}｜${esc(it.url)}</td></tr>`).join('');
+    $('#ingOut').innerHTML = `
+      <div class="card" style="margin:14px 0 0">
+        <h2>入库结果：成功 ${r.ok} 篇 · 失败 ${r.fail} 篇</h2>
+        <table><thead><tr><th style="width:80px">状态</th><th>标题</th><th style="width:70px">文体</th>
+        <th style="width:80px">字数</th><th>文件名</th></tr></thead><tbody>${rows}</tbody></table>
+        <p class="small muted" style="margin-top:10px">已写入：${esc(r.kb1)}</p>
+      </div>`;
+    svcMsg('#ingMsg', `完成：成功 ${r.ok} 篇`);
+    if(r.restat) renderRestat(r.restat, '#restatOut');
+  }catch(e){ svcMsg('#ingMsg', e.message, true); }
+  finally{ btn.disabled = false; btn.textContent = '抓取并入库'; }
+}
+
+function renderRestat(rs, sel){
+  if(!rs || !rs.counted){ $(sel).innerHTML = ''; return; }
+  const c = rs.chars||{};
+  const lv = {R:'t-r', T:'t-t', O:'t-o'};
+  const rows = (rs.metrics||[]).map(m=>`<tr>
+    <td>${esc(m.name)}</td>
+    <td class="freq">${m.hit}/${m.total} = ${m.pct}%</td>
+    <td><span class="tag ${lv[m.level]||'t-o'}">${m.level} 级</span></td>
+    <td class="muted small">${m.level==='R'?'可作稳定规则':'待样本累积'}</td></tr>`).join('');
+  $(sel).innerHTML = `
+    <div class="card" style="margin:14px 0 0">
+      <h2>自我总结 · 语料特征重算</h2>
+      <p class="small">计入 <b>${rs.counted}</b> 篇（共 ${rs.total} 个文件）　·　正文篇幅：最小 ${c.min} / P25 ${c.p25} / <b>中位 ${c.p50}</b> / P75 ${c.p75} / 最大 ${c.max} 字</p>
+      <table><thead><tr><th>特征</th><th style="width:140px">实测频率</th><th style="width:90px">等级</th><th style="width:130px">说明</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <p class="small muted" style="margin-top:10px">
+        规则升级纪律：单篇新样本只进 KB1、不改规则；同一新特征在 <b>≥3 篇</b>出现且与现规则冲突，才修订 KB2。
+        R 级门槛为同文体 ≥5 篇且频率 ≥80%。</p>
+      <p class="small muted">点「重建页面」可把新语料与规则同步到展示台。</p>
+    </div>`;
+}
+
+async function rebuild(){
+  svcMsg('#ingMsg','重建页面中…');
+  try{ const r = await svc('/api/rebuild', {}); svcMsg('#ingMsg', r.hint || '已重建'); }
+  catch(e){ svcMsg('#ingMsg', e.message, true); }
+}
+
 loadCfg();
 renderSteps();
 $('#go').addEventListener('click', run);
@@ -463,6 +609,14 @@ $('#test').addEventListener('click', testConn);
 $('#copy').addEventListener('click', copyFinal);
 $('#tog').addEventListener('click', toggleSet);
 $('#setbox').style.display='none';
+$('#pickFile').addEventListener('click', ()=>$('#fileInput').click());
+$('#fileInput').addEventListener('change', e=>handleFiles(e.target.files));
+$('#ingGo').addEventListener('click', ingest);
+$('#svcCheck').addEventListener('click', checkSvc);
+$('#rebuild').addEventListener('click', rebuild);
+$('#material').addEventListener('dragover', e=>{ e.preventDefault(); e.currentTarget.style.borderColor='#0F6E56'; });
+$('#material').addEventListener('dragleave', e=>{ e.currentTarget.style.borderColor=''; });
+$('#material').addEventListener('drop', e=>{ e.preventDefault(); e.currentTarget.style.borderColor=''; handleFiles(e.dataTransfer.files); });
 
 </script>
 </body>
