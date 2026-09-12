@@ -295,6 +295,15 @@ class Handler(BaseHTTPRequestHandler):
             ctype = "application/javascript; charset=utf-8"
         elif target.endswith(".css"):
             ctype = "text/css; charset=utf-8"
+        elif target.endswith(".webmanifest"):
+            # PWA 清单必须用这个类型，否则浏览器不认
+            ctype = "application/manifest+json; charset=utf-8"
+        elif target.endswith(".png"):
+            ctype = "image/png"
+        elif target.endswith(".svg"):
+            ctype = "image/svg+xml"
+        elif target.endswith(".ico"):
+            ctype = "image/x-icon"
         with open(target, "rb") as fh:
             data = fh.read()
         self.send_response(200)

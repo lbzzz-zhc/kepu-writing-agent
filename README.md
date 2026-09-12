@@ -108,6 +108,20 @@ python tools/writer_server.py --site /path/to/docs
 
 **入库纪律**：新文章只进 KB1（仅供风格）；同一新特征在 ≥3 篇出现且与现规则冲突，才改动 KB2。文章里的标准与数据**永远不作为**写作的事实来源。
 
+### 可以装成应用（PWA）
+
+两个页面都支持"安装到桌面/手机主屏"（Chrome/Edge 地址栏右侧的安装图标，或菜单里的"将页面作为应用安装"）。
+
+**装成应用后内容照样改** —— 应用只是入口，东西还在 `docs/` 与 GitHub Pages 上：
+
+```
+改语料或规则 → 重跑 build_site.py + build_writer.py → 推送 → 刷新即新版
+```
+
+Service Worker 对**页面走网络优先**（保证刷新就能看到新版），跨域模型请求与本地 `/api/` 一律放行不缓存；缓存按版本号命名，旧版自动清理。检测到新版时右下角会浮出刷新提示。
+
+图标由 `tools/pwa_assets.py` 用纯标准库生成（手写 PNG，不依赖 Pillow）。
+
 ### 只要纯文本，不要配图
 
 语料是用来学**写法**的，配图和图注都是噪音。入库时一律转成"排版好的纯文本"：
@@ -129,7 +143,7 @@ python tools/writer_server.py --site /path/to/docs
 | `corpus_digest.py` | 语料量化特征统计 —— **规则频率的唯一依据** |
 | `kb_index.py` | 统一字数口径 + 修正文件头 + 重建 `语料清单.csv` |
 | `kb_clean.py` | 清洗语料：删图片标记、图注与孤立符号行，只留排版好的纯文本（带备份与预演） |
-| `build_site.py` | 生成展示台 `docs/index.html` |
+|  `build_site.py` | 生成展示台 `docs/index.html` |
 | `build_writer.py` | 生成写作台 `docs/writer.html` |
 | `writer_server.py` | 本地托管 + API 转接 + 文件解析 + 链接入库 + 统计重算（解决跨域与写盘限制） |
 
@@ -205,7 +219,7 @@ python tools/push_to_github.py --repo lbzzz-zhc/kepu-writing-agent --branch main
 
 它以远端最新提交为父提交，逐文件走 REST API 推送，保留历史、不强制覆盖。
 
-网页更新（改完知识库后必做）：重新跑 `build_site.py` / `build_writer.py` 生成 `docs/`，再提交推送，GitHub Pages 会自动重建（约 1 分钟）。
+网页更新（改完知识库后必做）：重新跑  `build_site.py` / `build_writer.py` 生成 `docs/`，再提交推送，GitHub Pages 会自动重建（约 1 分钟）。
 
 ---
 

@@ -21,6 +21,9 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pwa_assets  # noqa: E402  让网页可以"安装成应用"
+
 STATE = {
     "title": "科普写作智能体 · 在线工作台",
     "subtitle": "个人微信公众号科普写作风格库与规则库",
@@ -538,6 +541,7 @@ def main():
     body = body.replace("__P50__", str(st["p50"]))
     body = body.replace("__SPAN__", f"{st['earliest'][:7]} → {st['latest'][:7]}".strip(" →"))
     head = HTML_HEAD.replace("__TITLE__", esc(STATE["title"]))
+    head = head.replace("</head>", pwa_assets.head_tags("index.html") + "</head>")
     body = body.replace("__DATA__", json.dumps(data, ensure_ascii=False))
     body = body.replace("__JS__", JS)
 
@@ -546,6 +550,8 @@ def main():
         fh.write(head + body)
     size = os.path.getsize(out) / 1024
     print(f"[已生成] {out}  ({size:.0f} KB)")
+    made = pwa_assets.write(args.out, page="index.html")
+    print(f"  PWA 资源：{' · '.join(made)}")
     print(f"  语料 {st['counted']} 篇计入 / 共 {st['total']} 个文件")
     print(f"  R 级 {len(RULES_R)} 条 · T 级 {len(RULES_T)} 条 · 观察项 {len(RULES_O)} 条")
     print(f"  变体 {len(VARIANTS)} 类 · 提示词 {'完整版+压缩版' if len(prompts)==2 else '缺失'}")

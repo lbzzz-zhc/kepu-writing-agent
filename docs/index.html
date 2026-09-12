@@ -80,6 +80,33 @@ details[open] summary:before{content:"▾ "}
 footer{color:var(--muted);font-size:12.5px;margin-top:30px;text-align:center}
 @media (max-width:640px){.wrap{padding:18px 14px 60px}h1{font-size:19px}th:nth-child(4),td:nth-child(4){display:none}}
 </style>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0F6E56">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="科普写作台">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<script>
+if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0) {
+  addEventListener("load", function () {
+    navigator.serviceWorker.register("sw.js").then(function (reg) {
+      reg.addEventListener("updatefound", function () {
+        var nw = reg.installing; if (!nw) return;
+        nw.addEventListener("statechange", function () {
+          if (nw.state === "installed" && navigator.serviceWorker.controller) showUpdate();
+        });
+      });
+    }).catch(function () {});
+  });
+}
+function showUpdate(){
+  var b = document.createElement("div");
+  b.textContent = "有新版本，点此刷新";
+  b.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:9999;background:#0F6E56;color:#fff;padding:10px 16px;border-radius:22px;font-size:13px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.18)";
+  b.onclick = function(){ location.reload(); };
+  document.body.appendChild(b);
+}
+</script>
 </head>
 <body>
 <div class="wrap">

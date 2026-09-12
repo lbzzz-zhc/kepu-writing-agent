@@ -25,6 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_site as B  # noqa: E402  复用规则数据，保证与展示页同源
+import pwa_assets  # noqa: E402  让网页可以"安装成应用"
 
 
 def plain(s):
@@ -816,11 +817,15 @@ def main():
         "prompt": prompts,
     }
     out_html = TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False)).replace("__JS__", JS)
+    # 写作台的"装成应用"入口指向写作台本身
+    out_html = out_html.replace("</head>", pwa_assets.head_tags("writer.html") + "</head>")
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, "writer.html")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(out_html)
     print(f"[已生成] {path}  ({os.path.getsize(path)/1024:.0f} KB)")
+    made = pwa_assets.write(args.out, page="writer.html")
+    print(f"  PWA 资源：{' · '.join(made)}")
     print(f"  规则文本 {len(rules_text())} 字 · 变体文本 {len(variants_text())} 字 · 七步流水线")
     return 0
 

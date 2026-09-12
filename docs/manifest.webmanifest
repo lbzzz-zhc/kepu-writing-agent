@@ -1,0 +1,17 @@
+{
+  "name": "科普写作智能体 · 知识库展示台",
+  "short_name": "知识库",
+  "description": "按本人风格写公众号科普推文：风格规则库 + 事实底稿 + 七步流水线",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F7F8F7",
+  "theme_color": "#0F6E56",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
