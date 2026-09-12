@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 构建与诊断产物
+_diag/
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 写作台本地配置（含密钥，绝不入库）
+.env
+writer_config.json
+
+# 修复前的旧批次备份（已被重算版本取代，不入库）
+_旧批次备份/
