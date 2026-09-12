@@ -120,6 +120,27 @@ python tools/build_writer.py --project . --out docs
 
 ---
 
+## 发布与更新
+
+仓库：<https://github.com/lbzzz-zhc/kepu-writing-agent>　·　网页：<https://lbzzz-zhc.github.io/kepu-writing-agent/>
+
+```bash
+git add -A && git commit -m "更新"
+git push                                  # 网络正常时用这个
+```
+
+**若 `git push` 报连接失败**（本机环境下 `github.com:443` 不可达，但 `api.github.com` 正常），改用：
+
+```bash
+python tools/push_to_github.py --repo lbzzz-zhc/kepu-writing-agent --branch main --message "更新"
+```
+
+它以远端最新提交为父提交，逐文件走 REST API 推送，保留历史、不强制覆盖。
+
+网页更新（改完知识库后必做）：重新跑 `build_site.py` / `build_writer.py` 生成 `docs/`，再提交推送，GitHub Pages 会自动重建（约 1 分钟）。
+
+---
+
 ## 许可
 
 个人项目，内容为作者本人已发表作品。转载或引用请注明出处。
