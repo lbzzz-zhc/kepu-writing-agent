@@ -817,8 +817,10 @@ def main():
         "prompt": prompts,
     }
     out_html = TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False)).replace("__JS__", JS)
-    # 写作台的"装成应用"入口指向写作台本身
-    out_html = out_html.replace("</head>", pwa_assets.head_tags("writer.html") + "</head>")
+    # 写作台的"装成应用"入口指向写作台本身。
+    # 只替换第一处 —— 页面里的"导出 Word"模板字符串中也有 </head>，
+    # 全量替换会把 PWA 标签注入到那段字符串里。
+    out_html = out_html.replace("</head>", pwa_assets.head_tags("writer.html") + "</head>", 1)
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, "writer.html")
     with open(path, "w", encoding="utf-8") as fh:

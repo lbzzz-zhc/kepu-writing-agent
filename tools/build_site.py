@@ -541,7 +541,8 @@ def main():
     body = body.replace("__P50__", str(st["p50"]))
     body = body.replace("__SPAN__", f"{st['earliest'][:7]} → {st['latest'][:7]}".strip(" →"))
     head = HTML_HEAD.replace("__TITLE__", esc(STATE["title"]))
-    head = head.replace("</head>", pwa_assets.head_tags("index.html") + "</head>")
+    # 只替换第一处（同 build_writer：页面 JS 里可能还有 </head> 字样）
+    head = head.replace("</head>", pwa_assets.head_tags("index.html") + "</head>", 1)
     body = body.replace("__DATA__", json.dumps(data, ensure_ascii=False))
     body = body.replace("__JS__", JS)
 
