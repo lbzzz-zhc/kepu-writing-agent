@@ -427,6 +427,21 @@ def load_prompts(project):
     return res
 
 
+def load_handbook(project):
+    """KB2 里"给人读"的文档（手册 / 证据表 / 体检报告），拿去在展示台直接渲染。"""
+    base = os.path.join(project, "10_知识库", "02_风格规则库")
+    want = (("个人风格手册", "个人风格手册"), ("风格证据表", "风格证据表"),
+            ("风格体检报告", "体检报告（原始数据）"))
+    out = []
+    for prefix, label in want:
+        cands = sorted(f for f in os.listdir(base)
+                       if f.startswith(prefix) and f.endswith(".md")) if os.path.isdir(base) else []
+        if not cands:
+            continue
+        out.append([label, open(os.path.join(base, cands[-1]), encoding="utf-8").read()])
+    return out
+
+
 def stats(corpus):
     counted = [c for c in corpus if c["counted"]]
     cs = sorted(c["chars"] for c in counted) or [0]
@@ -524,6 +539,26 @@ details[open] summary:before{content:"▾ "}
 .art .f{margin-top:8px;color:#333;font-size:13px}
 footer{color:var(--muted);font-size:12.5px;margin-top:30px;text-align:center}
 @media (max-width:640px){.wrap{padding:18px 14px 60px}h1{font-size:19px}th:nth-child(4),td:nth-child(4){display:none}}
+/* ---- 风格手册（markdown 渲染） ---- */
+.hbsw{display:flex;flex-wrap:wrap;gap:8px}
+.hbtn{background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 15px;
+  font-size:13px;color:var(--muted);cursor:pointer;font-family:inherit}
+.hbtn:hover{background:var(--gray-bg)}
+.hbtn.on{background:var(--teal-bg);border-color:var(--teal);color:var(--teal);font-weight:500}
+.md{line-height:1.85}
+.md h2{font-size:18px;font-weight:600;margin:6px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.md h3{font-size:15px;font-weight:600;margin:24px 0 10px;color:var(--teal)}
+.md h4{font-size:13.5px;font-weight:600;margin:18px 0 8px}
+.md h5{font-size:13px;font-weight:600;margin:14px 0 6px;color:var(--muted)}
+.md blockquote{margin:10px 0;padding:10px 14px;background:var(--gray-bg);border-left:3px solid var(--teal);
+  border-radius:0 8px 8px 0;color:var(--muted);font-size:13px}
+.md ul,.md ol{margin:8px 0;padding-left:22px}
+.md li{margin:5px 0}
+.md hr{border:none;border-top:1px solid var(--line);margin:20px 0}
+.md code{background:var(--gray-bg);padding:1px 5px;border-radius:4px;font-size:12.5px}
+.md pre{max-height:none;margin:10px 0}
+.md table{font-size:12.5px}
+.md b{color:var(--ink)}
 </style>
 </head>
 <body>
@@ -548,6 +583,7 @@ HTML_BODY = """
 <nav class="tabs" id="tabs"></nav>
 
 <section class="panel" id="p-overview"></section>
+<section class="panel" id="p-handbook"></section>
 <section class="panel" id="p-rules"></section>
 <section class="panel" id="p-variants"></section>
 <section class="panel" id="p-corpus"></section>
@@ -571,7 +607,7 @@ const D = JSON.parse(document.getElementById('DATA').textContent);
 const esc = s => String(s==null?'':s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 const TABS = [
-  ['overview','概览'],['rules','风格规则'],['variants','变体手册'],
+  ['overview','概览'],['handbook','风格手册'],['rules','风格规则'],['variants','变体手册'],
   ['corpus','语料库'],['check','审校清单'],['prompt','系统提示词']
 ];
 document.getElementById('tabs').innerHTML = TABS.map(([k,n],i)=>
@@ -614,6 +650,84 @@ document.getElementById('p-overview').innerHTML = `
   <p class="small muted">方案 A（推荐）：在对话里通过技能触发，由 Agent 编排独立子代理。
   方案 B：平台自跑时改为“三次独立重跑 + 强制交错核对”，并注明已降级。</p>
 </div>`;
+
+/* ---- 风格手册（把 KB2 的 markdown 文档渲染成可读页） ---- */
+function mdToHtml(md){
+  const inline = s => esc(s)
+    .replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>');
+  const lines = String(md||'').split('\n');
+  const out = [];
+  let i = 0;
+  const isBlock = t => /^(#{1,5}\s|>|\s*\||\s*[-*]\s|\s*\d+[.)]\s|---)/.test(t);
+  while(i < lines.length){
+    const ln = lines[i];
+    if(!ln.trim()){ i++; continue; }
+    if(/^```/.test(ln.trim())){
+      const buf = []; i++;
+      while(i < lines.length && !/^```/.test(lines[i].trim())){ buf.push(lines[i]); i++; }
+      i++;
+      out.push('<pre>'+esc(buf.join('\n'))+'</pre>');
+      continue;
+    }
+    if(/^-{3,}$/.test(ln.trim())){ out.push('<hr>'); i++; continue; }
+    const h = ln.match(/^(#{1,5})\s+(.*)$/);
+    if(h){ const n = h[1].length; out.push(`<h${n+1}>${inline(h[2])}</h${n+1}>`); i++; continue; }
+    if(/^>\s?/.test(ln)){
+      const buf = [];
+      while(i < lines.length && /^>\s?/.test(lines[i])){ buf.push(lines[i].replace(/^>\s?/,'')); i++; }
+      out.push('<blockquote>'+inline(buf.join(' '))+'</blockquote>');
+      continue;
+    }
+    if(/^\s*\|/.test(ln)){
+      const rows = [];
+      while(i < lines.length && /^\s*\|/.test(lines[i])){
+        rows.push(lines[i].trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(x=>x.trim()));
+        i++;
+      }
+      const head = rows[0];
+      const sep = rows[1] && rows[1].every(c=>/^:?-{2,}:?$/.test(c));
+      const body = rows.slice(sep ? 2 : 1);
+      out.push('<table><thead><tr>'+head.map(c=>`<th>${inline(c)}</th>`).join('')+'</tr></thead><tbody>'
+        + body.map(r=>'<tr>'+r.map(c=>`<td>${inline(c)}</td>`).join('')+'</tr>').join('')
+        + '</tbody></table>');
+      continue;
+    }
+    if(/^\s*[-*]\s+/.test(ln)){
+      const buf = [];
+      while(i < lines.length && /^\s*[-*]\s+/.test(lines[i])){ buf.push(lines[i].replace(/^\s*[-*]\s+/,'')); i++; }
+      out.push('<ul>'+buf.map(x=>`<li>${inline(x)}</li>`).join('')+'</ul>');
+      continue;
+    }
+    if(/^\s*\d+[.)]\s+/.test(ln)){
+      const buf = [];
+      while(i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])){ buf.push(lines[i].replace(/^\s*\d+[.)]\s+/,'')); i++; }
+      out.push('<ol>'+buf.map(x=>`<li>${inline(x)}</li>`).join('')+'</ol>');
+      continue;
+    }
+    const buf = [ln]; i++;
+    while(i < lines.length && lines[i].trim() && !isBlock(lines[i])){ buf.push(lines[i]); i++; }
+    out.push(`<p>${inline(buf.join(' '))}</p>`);
+  }
+  return out.join('\n');
+}
+let hbIdx = 0;
+function renderHandbook(){
+  const docs = D.handbook || [];
+  const host = document.getElementById('p-handbook');
+  if(!docs.length){ host.innerHTML = '<div class="card"><p class="muted">未找到风格手册文件。</p></div>'; return; }
+  const btns = docs.map((d,i)=>
+    `<button class="hbtn ${i===hbIdx?'on':''}" data-h="${i}">${esc(d[0])}</button>`).join('');
+  host.innerHTML = `<div class="card"><div class="hbsw">${btns}</div>
+    <p class="small muted" style="margin:10px 0 0">按文体与维度展开，每条都带实测频率；
+    <b>给人读的汇总</b>，机器写作时仍以「风格规则」页的规则表为准。</p></div>
+    <div class="card md" id="hbBody"></div>`;
+  document.getElementById('hbBody').innerHTML = mdToHtml(docs[hbIdx][1]);
+  host.querySelectorAll('.hbtn').forEach(b=>{
+    b.onclick = () => { hbIdx = +b.dataset.h; renderHandbook(); window.scrollTo({top:0,behavior:'smooth'}); };
+  });
+}
+renderHandbook();
 
 /* ---- 规则 ---- */
 function ruleTable(rows, lv){
@@ -760,6 +874,7 @@ def main():
         "banlist": BANLIST, "variants": VARIANTS,
         "checklist": CHECKLIST, "accept": ACCEPT,
         "corpus": corpus, "prompt": prompts,
+        "handbook": load_handbook(args.project),
     }
 
     os.makedirs(args.out, exist_ok=True)

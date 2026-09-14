@@ -314,6 +314,61 @@ def main():
     w(f"- 问号 全角 {allbody.count('？')} ／ 半角 {allbody.count('?')}")
     w(f"- emoji 总数 {len(C.EMOJI_PAT.findall(allbody))}")
 
+    # ---- 九、时间分层：稳定规则里混着"时代习惯"，必须拆开看 ----
+    w()
+    w("## 九、时间分层（判断是真风格还是阶段习惯）")
+    w()
+    w("> 跨越 6 年的语料里，某些“规则”其实是“某段时间的习惯”。"
+      "不拆时间层，会把阶段性写法当成风格底线。")
+
+    def _year(i):
+        m = re.search(r"(\d{4})-\d{2}-\d{2}", str(i.get("published") or ""))
+        return int(m.group(1)) if m else None
+
+    def _src_kind(f):
+        lines = [norm_line(l) for l in texts[f].split("---", 2)[-1].splitlines()]
+        lines = [x for x in lines if x]
+        if any(re.match(r"^(内容来源|内容参考|资料来源|参考资料|来源|参考文献)[:：]?$", x)
+               for x in lines):
+            return "模块"
+        if any(re.match(r"^(内容来源|内容参考|资料来源|参考资料|来源)[:：]\S", x) for x in lines):
+            return "行内"
+        return "无"
+
+    w()
+    w("| 年份 | 篇数 | 篇幅中位 | 有来源标注 | 独立模块 | 行内标注 | 零感叹号 |")
+    w("|---|---|---|---|---|---|---|")
+    years = sorted({y for y in (_year(i) for i in counted) if y})
+    for y in years:
+        v = [i for i in counted if _year(i) == y]
+        if not v:
+            continue
+        cs = sorted(i["chars"] for i in v)
+        k = Counter(_src_kind(i["file"]) for i in v)
+        nv = len(v)
+        w("| %d | %d | %d | %s | %s | %s | %s |" % (
+            y, nv, cs[nv // 2],
+            "%d%%" % round(100 * (k["模块"] + k["行内"]) / nv),
+            "%d%%" % round(100 * k["模块"] / nv),
+            "%d%%" % round(100 * k["行内"] / nv),
+            "%d%%" % round(100 * sum(1 for i in v if i["excl"] == 0) / nv)))
+    w()
+    early = [i for i in counted if _year(i) and _year(i) <= 2023]
+    late = [i for i in counted if _year(i) and _year(i) >= 2024]
+    for name, v in (("早期 2020–2023", early), ("近期 2024–2026", late)):
+        if not v:
+            continue
+        nv = len(v)
+        cs = sorted(i["chars"] for i in v)
+        k = Counter(_src_kind(i["file"]) for i in v)
+        w("- **%s**（%d 篇）：篇幅中位 %d｜有来源标注 %d%%（模块 %d%%／行内 %d%%）"
+          "｜零感叹号 %d%%｜中位标准数 %d" % (
+              name, nv, cs[nv // 2],
+              round(100 * (k["模块"] + k["行内"]) / nv),
+              round(100 * k["模块"] / nv), round(100 * k["行内"] / nv),
+              round(100 * sum(1 for i in v if i["excl"] == 0) / nv),
+              sorted(i["n_std"] for i in v)[nv // 2]))
+
     report = "\n".join(out)
     if args.md:
         with open(args.md, "w", encoding="utf-8") as fh:
