@@ -246,6 +246,82 @@ def api_restat():
     }
 
 
+_NGRAM_CACHE = {"sig": None, "grams": {}, "n": 0}
+
+
+def corpus_ngrams(n=12):
+    """把 KB1 全部语料切成 n 字片段 → {片段: 语料ID}。按语料 mtime 做缓存。
+
+    G3 硬闸：改稿/成稿与历史语料连续 ≥12 字重合即判"疑似洗稿"。
+    这件事必须放在服务端做 —— KB1 只存在于本机。
+    """
+    sig = 0
+    files = []
+    if os.path.isdir(KB1):
+        for f in sorted(os.listdir(KB1)):
+            if f.startswith("KB1-") and f.endswith(".md"):
+                p = os.path.join(KB1, f)
+                mt = os.path.getmtime(p)
+                files.append(f)
+                sig = (sig * 31 + int(mt * 1000)) % (2 ** 61 - 1)
+    if _NGRAM_CACHE["n"] == n and _NGRAM_CACHE["sig"] == sig:
+        return _NGRAM_CACHE["grams"]
+
+    grams = {}
+    for f in files:
+        raw = open(os.path.join(KB1, f), encoding="utf-8").read()
+        body = raw.split("---", 2)[-1]
+        # 归一化后再切：去加粗标记、去空白、去图片占位
+        text = re.sub(r"\*+", "", body)
+        text = re.sub(r"\[\[图片\]\]", "", text)
+        text = re.sub(r"[\s\u3000]+", "", text)
+        m = re.match(r"(KB1-[A-Z]+-\d{6}-\d+)", f)
+        sid = m.group(1) if m else f
+        for i in range(0, max(0, len(text) - n + 1)):
+            g = text[i:i + n]
+            if g not in grams:
+                grams[g] = sid
+    _NGRAM_CACHE.update({"sig": sig, "grams": grams, "n": n})
+    sys.stderr.write(f"  [查重] KB1 n-gram 索引已重建：{len(grams)} 条（{len(files)} 篇）\n")
+    return grams
+
+
+def api_dupcheck(text, n=12):
+    """比对文本与 KB1，返回连续重合片段及来源篇目（合并后按长度排序）。"""
+    grams = corpus_ngrams(n)
+    clean = re.sub(r"[\s\u3000]+", "", re.sub(r"\*+", "", text or ""))
+    hits, i = [], 0
+    while i <= len(clean) - n:
+        g = clean[i:i + n]
+        if g in grams:
+            j = i + n
+            while j < len(clean) and clean[j:j + n] in grams:
+                j += 1
+            hits.append({"snippet": clean[i:j], "src": grams[g],
+                         "at": i, "end": j, "src_all": {grams[g]}})
+            i = j
+        else:
+            i += 1
+    merged = []
+    for h in hits:
+        if merged and h["src"] == merged[-1]["src"] and h["at"] - merged[-1]["end"] < n:
+            merged[-1]["snippet"] += h["snippet"]
+            merged[-1]["end"] = h["end"]
+        else:
+            merged.append(dict(h))
+    merged.sort(key=lambda x: -len(x["snippet"]))
+    for h in merged:
+        h.pop("src_all", None)
+    return {
+        "n": n,
+        "clean_len": len(clean),
+        "hits": merged[:20],
+        "n_hits": len(merged),
+        "longest": len(merged[0]["snippet"]) if merged else 0,
+        "pass": (len(merged) == 0),
+    }
+
+
 def features_path():
     """统计缓存必须落在工程根目录 —— 与 build_site.py 读取的位置保持一致。
 
@@ -374,6 +450,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.h_json(200, api_restat())
             if path == "/api/ping":
                 return self.h_json(200, api_ping())
+            if path == "/api/dupcheck":
+                payload = self._read_json()
+                return self.h_json(200, api_dupcheck(str(payload.get("text") or ""),
+                                                     int(payload.get("n") or 12)))
             if path == "/api/rebuild":
                 return self.h_rebuild()
             self.send_error(404, "not found")

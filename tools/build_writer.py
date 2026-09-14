@@ -27,12 +27,58 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_site as B  # noqa: E402  复用规则数据，保证与展示页同源
 import pwa_assets  # noqa: E402  让网页可以"安装成应用"
 
+PROJECT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
 
 def plain(s):
     """去掉强调标记：提示词里不该出现 <em> 与 **（KB2 用 ** 标注实测数据）。"""
     s = re.sub(r"</?em>", "", s or "")
     s = s.replace("**", "")
     return re.sub(r"`", "", s)
+
+
+def kb2_targets(project=None):
+    """从 KB2 规则表抽体检阈值 —— 页面里不许硬编码这些数字。
+
+    抽不到就退回保守默认值，并在构建日志里说明，避免"悄悄用错阈值"。
+    """
+    R, T, O, ver, base = B.load_rule_table(project or PROJECT)
+    blob = " ".join((r[2] or "") + " " + (r[3] or "") for r in (R + T))
+    t = {}
+    m = re.search(r"(\d{3,4})\s*[–\-—~至]\s*(\d{3,4})\s*字", blob)
+    t["chars"] = [int(m.group(1)), int(m.group(2))] if m else [1000, 1400]
+    m = re.search(r"中位\s*\**(\d{3,4})\**\s*字", blob)
+    t["p50"] = int(m.group(1)) if m else 1180
+    m = re.search(r"段数中位\s*\**(\d+)\**", blob)
+    t["paras"] = int(m.group(1)) if m else 20
+    m = re.search(r"段长中位\s*\**(\d+)\**\s*字", blob)
+    t["avg_para"] = int(m.group(1)) if m else 57
+    m = re.search(r"标题\s*平均\s*\**([\d.]+)\**\s*字", blob) or \
+        re.search(r"平均\s*\**([\d.]+)\**\s*字（中位", blob)
+    t["title_len"] = float(m.group(1)) if m else 16.9
+    t["kb2_ver"], t["kb2_base"] = ver, base
+    return t
+
+
+def genre_manual(project=None):
+    """把《文体变体手册》按文体拆成 dict，便于只把相关那节塞进提示词。"""
+    p = os.path.join(project or PROJECT, "10_知识库", "02_风格规则库",
+                     "文体变体手册_v0.1.md")
+    if not os.path.exists(p):
+        return {}
+    text = open(p, encoding="utf-8").read()
+    out = {}
+    for m in re.finditer(r"##\s*[一二三四五六]、\s*(STD|HEALTH|SAFETY|AVOID|MISC)\b(.*?)(?=\n##\s|\Z)",
+                         text, re.S):
+        out[m.group(1)] = (m.group(1) + " " + m.group(2)).strip()
+    # 判定顺序与跨文体对照表也带上
+    m = re.search(r"##\s*判定顺序.*?(?=\n##\s|\Z)", text, re.S)
+    if m:
+        out["_howto"] = m.group(0).strip()
+    m = re.search(r"##\s*五、跨文体对照表.*?(?=\n##\s|\Z)", text, re.S)
+    if m:
+        out["_table"] = m.group(0).strip()
+    return out
 
 
 def rules_text():
@@ -404,8 +450,9 @@ function plainLines(t){
   return mdToPlain(t).split('\n').map(s=>s.trim()).filter(s=>s.length);
 }
 /* 把成稿转成 Word 友好的 HTML：第 1 行作标题，短行/原文 ## 行作小标题 */
-function buildWordHtml(indent){
-  const lines = plainLines($('#finalText').value);
+function buildWordHtml(indent){ return buildWordHtmlText($('#finalText').value, indent); }
+function buildWordHtmlText(src, indent){
+  const lines = plainLines(src);
   if(!lines.length) return '';
   // 小标题判定：短行、不以句末标点结尾；排除列表项、来源模块、以冒号收尾的行
   const isHead = (s, i) => i>0 && s.length<=22
@@ -436,10 +483,11 @@ function previewWord(){
     ? html.replace(/<\/?html[^>]*>|<\/?head[^>]*>|<\/?body[^>]*>|<meta[^>]*>/g,'')
     : '<p class="muted">还没有成稿。</p>';
 }
-async function copyRich(){
-  const html = buildWordHtml($('#indent').checked);
-  const text = mdToPlain($('#finalText').value);
-  if(!html){ flash('还没有成稿', true); return; }
+async function copyRich(){ return copyRichText($('#finalText').value, '还没有成稿'); }
+async function copyRichText(src, emptyMsg){
+  const html = buildWordHtmlText(src, $('#indent') ? $('#indent').checked : false);
+  const text = mdToPlain(src);
+  if(!html){ flash(emptyMsg || '没有内容', true); return; }
   try{
     if(window.ClipboardItem && navigator.clipboard && navigator.clipboard.write){
       await navigator.clipboard.write([new ClipboardItem({
@@ -458,10 +506,11 @@ function copyPlain(){
   const text = mdToPlain($('#finalText').value);
   fb(text, ()=>flash('已复制纯文本（Markdown 符号已清理）'));
 }
-function downloadDoc(){
-  const html = buildWordHtml($('#indent').checked);
-  if(!html){ flash('还没有成稿', true); return; }
-  const name = (plainLines($('#finalText').value)[0] || '成稿').replace(/[\\/:*?"<>|]/g,'').slice(0,40);
+function downloadDoc(){ return downloadDocText($('#finalText').value, '成稿'); }
+function downloadDocText(src, fallbackName){
+  const html = buildWordHtmlText(src, $('#indent') ? $('#indent').checked : false);
+  if(!html){ flash('没有可导出的内容', true); return; }
+  const name = (plainLines(src)[0] || fallbackName || '成稿').replace(/[\\/:*?"<>|]/g,'').slice(0,40);
   const blob = new Blob(['\ufeff', html], {type:'application/msword'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -634,6 +683,367 @@ async function rebuild(){
   catch(e){ svcMsg('#ingMsg', e.message, true); }
 }
 
+/* ==================== 改稿体检（本地计算，不经过模型） ==================== */
+const T = D.targets || {};
+
+const RE_STDNO = /(?:GB\/T|GB|ISO|IEC|DBS?|SB\/T|QB\/T|NY\/T|T\/[A-Z]{2,8}|JJF)\s?\d[\d.\-—]*/g;
+const RE_EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu;
+const RE_SRC_MOD = /^(内容来源|内容参考|资料来源|参考资料|来源)[:：]?\s*$/;
+const RE_SRC_INL = /^(内容来源|内容参考|资料来源|参考资料|来源)[:：]\s*\S/;
+const CONN = ["其实","因此","通常","可能","建议","同时","但是","所以","那么","不过","例如","另外","值得注意"];
+/* 文体判定的关键词（短语比单词区分度高；标准号另加权）。
+   参数是在 80 篇真实语料上回归出来的：关键词 + 标准号×3 + 标题×3 ≈ 71% 准确率。
+   所以判定结果只作**建议**，页面会显示置信度，最终以用户选的文体为准。 */
+const GENRE_WORDS = {
+  STD: ["标准规定","根据标准","标准要求","依据《","国标","强制性","推荐性","条款","限值","监督抽查","执行标准","技术要求"],
+  AVOID: ["怎么选","选购","避坑","踩坑","误区","值不值","辨别","套路","别买","吃亏","划算","挑选","挑对","性价比"],
+  HEALTH: ["营养","摄入","膳食","热量","蛋白","脂肪","维生素","钙","吃","喝","消化","代谢","成分"],
+  SAFETY: ["风险","防护","事故","危害","误用","伤害","使用不当","安全隐患","中毒","烫","爆炸","漏电"],
+};
+
+function guessGenre(joined, title, nStd){
+  const sc = {};
+  for(const g in GENRE_WORDS){
+    let v = 0;
+    for(const k of GENRE_WORDS[g]){
+      v += joined.split(k).length - 1;
+      v += (title.split(k).length - 1) * 3;   // 标题里的词更能说明意图
+    }
+    sc[g] = v;
+  }
+  sc.STD += nStd * 3;                          // 有带编号标准 → 强烈指向 STD
+  let best = 'MISC', bv = 0;
+  for(const g in sc){ if(sc[g] > bv){ bv = sc[g]; best = g; } }
+  const sorted = Object.values(sc).sort((a,b)=>b-a);
+  const conf = bv / Math.max(sorted[1] || 0, 1);
+  if(bv < 4) return {genre:'MISC', sc, conf:0};
+  return {genre:best, sc, conf};
+}
+
+function jLines(t){ return (t||'').replace(/\r/g,'').split('\n').map(s=>s.replace(/\*\*/g,'').trim()).filter(Boolean); }
+
+function analyze(text){
+  const raw = jLines(text);
+  // 首行若是短句且不以句末标点结尾，视为标题
+  let title = '';
+  if(raw.length && raw[0].length <= 34 && !/[。；，,]$/.test(raw[0])){
+    title = raw[0].replace(/^#+\s*/,'');
+  }
+  const lines = raw.slice(title ? 1 : 0);
+  const moduleAt = lines.findIndex(l => RE_SRC_MOD.test(l));
+  const srcModule = moduleAt >= 0;
+  const srcInline = lines.some(l => RE_SRC_INL.test(l));
+  const body = (srcModule ? lines.slice(0, moduleAt) : lines)
+    .filter(l => !/^\[\[图片\]\]$/.test(l) && !/^https?:\/\//.test(l));
+
+  const joined = body.join('');
+  const chars = joined.replace(/\s/g,'').length;
+  const lens = body.map(l => l.length);
+  const avg = lens.length ? Math.round(lens.reduce((a,b)=>a+b,0)/lens.length) : 0;
+  const first = body[0] || '';
+  const heads = body.filter(l => l.length <= 22 && !/[。；！？，,]$/.test(l) && !/^\d+[.、]/.test(l));
+  const headQ = heads.filter(l => /[？?]$/.test(l)).length;
+  const stds = Array.from(new Set(joined.match(RE_STDNO) || []));
+  const emoji = (joined.match(RE_EMOJI) || []).length;
+
+  const gj = guessGenre(joined, title, stds.length);
+  const genre = gj.genre, gScore = gj.sc;
+
+  return {
+    title, chars, paras: body.length, avg, first, firstHasStd: RE_STDNO.test(first),
+    firstHasWord: /标准|规定/.test(first), heads: heads.length, headQ,
+    exc: (joined.match(/[！!]/g)||[]).length,
+    fwComma: (joined.match(/，/g)||[]).length, hwComma: (joined.match(/,/g)||[]).length,
+    stds, emoji, srcModule, srcInline,
+    src: srcModule ? 'module' : (srcInline ? 'inline' : 'none'),
+    genre, gScore, gConf: gj.conf, conn: CONN.filter(w => joined.includes(w)),
+    consumer: joined.split('消费者').length-1, we: joined.split('我们').length-1,
+    you: joined.split('你').length-1, titleQ: /[？?]/.test(title), titleLen: title.length,
+    body,
+  };
+}
+
+function checkRules(a, genre){
+  const lo = (T.chars||[1000,1400])[0], hi = (T.chars||[1000,1400])[1];
+  const rows = [];
+  const add = (lvl, code, name, ok, got, want) =>
+    rows.push({lvl, code, name, ok, got, want});
+
+  add('R','R-01','首段不摆条款（无标准号、无“标准/规定”）',
+      !a.firstHasStd && !a.firstHasWord,
+      (a.firstHasStd?'首段含标准号':'') + (a.firstHasWord?(a.firstHasStd?'、':'')+'首段含“标准/规定”':'') || '干净',
+      '首段只写场景，主题压到第 2–3 句');
+  add('R','R-02','几乎不用感叹号', a.exc === 0, a.exc + ' 个', '全篇 0 个');
+  add('R','R-03','正文引用 ≥1 个带编号标准', a.stds.length >= 1,
+      a.stds.length + ' 个' + (a.stds.length?'（'+a.stds.slice(0,3).join('、')+'）':''),
+      '≥1 个，中位 2 个');
+  add('R','R-04','有来源标注（模块或行内）', a.src !== 'none',
+      a.src==='module'?'独立来源模块':(a.src==='inline'?'行内“内容来源：”':'无'),
+      '两种形态任选，必须有');
+  add('T','T-01','加粗短句切节，≥3 个小标题',
+      a.heads >= 3, a.heads + ' 个（其中问句 ' + a.headQ + ' 个）', '中位 6 个（区间 2–24）');
+  add('T','T-03','篇幅 ' + lo + '–' + hi + ' 字', a.chars >= lo && a.chars <= hi,
+      a.chars + ' 字', '中位 ' + (T.p50||1180) + ' 字');
+  add('T','T-04','段落节奏（段数与段长）',
+      a.paras >= 12 && a.paras <= 34 && a.avg >= 38 && a.avg <= 82,
+      a.paras + ' 段 / 平均 ' + a.avg + ' 字', '中位 ' + (T.paras||20) + ' 段 / 段长 ' + (T.avg_para||57) + ' 字');
+  add('T','T-02','标题 ' + (T.title_len||16.9) + ' 字上下、宜带问号',
+      a.titleLen >= 8 && a.titleLen <= 26,
+      (a.title?a.titleLen+' 字':'未识别标题') + (a.titleQ?'，带问号':'，无问号'),
+      '平均 ' + (T.title_len||16.9) + ' 字，带问号 59%');
+  if(genre === 'STD')
+    add('T','T-01b','标准类：至少一个问句式小标题', a.headQ >= 1,
+        a.headQ + ' 个', 'STD 实测 85%');
+  if(genre === 'HEALTH')
+    add('O','O-01','健康类可用 emoji 做锚点', true,
+        a.emoji + ' 个', 'HEALTH 实测 59%（可选）');
+  // T-06 只作观察：连接词密度因人因题而异，不该判"违规"
+  add('O','T-06','日常连接词使用（观察项）', true,
+      (a.conn.join('、') || '本篇偏少') + '（' + a.conn.length + ' 种）',
+      '全库常见：其实/因此/通常/可能/建议');
+  add('T','T-07','称谓以“消费者”为主',
+      a.consumer + a.we + a.you > 0,
+      '消费者 ' + a.consumer + ' / 我们 ' + a.we + ' / 你 ' + a.you, '消费者 67%、我们 51%');
+  return rows;
+}
+
+function renderCheck(a, rows){
+  const R = rows.filter(r=>r.lvl==='R'), Tr = rows.filter(r=>r.lvl!=='R');
+  const rOk = R.filter(r=>r.ok).length, tOk = Tr.filter(r=>r.ok).length;
+  const must = R.filter(r=>!r.ok);
+  const score = Math.round(100*(R.filter(r=>r.ok).length*3 + Tr.filter(r=>r.ok).length)
+                           / (R.length*3 + Tr.length));
+  const lv = score>=90?['t-r','很稳']:(score>=75?['t-t','接近']:['t-bad','需要改']);
+  $('#revScore').innerHTML =
+    `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+       <div style="font-size:30px;font-weight:600;color:${score>=90?'#0F6E56':(score>=75?'#854F0B':'#A32D2D')}">${score}</div>
+       <div><span class="tag ${lv[0]}">${lv[1]}</span>
+         <div class="small muted" style="margin-top:4px">
+           R 级 ${rOk}/${R.length} 项合规　·　T/O 级 ${tOk}/${Tr.length} 项符合
+           ${must.length?`　·　<b class="bad-mark">${must.map(m=>m.code).join('、')} 必须先改</b>`:''}
+         </div></div></div>`;
+
+  const trs = rows.map(r=>`<tr>
+    <td><span class="${r.ok?'ok-mark':(r.lvl==='R'?'bad-mark':'warn-mark')}">${r.ok?'✓ 合规':(r.lvl==='R'?'✗ 违规':'△ 偏离')}</span></td>
+    <td><b>${r.code}</b> ${esc(r.name)}</td>
+    <td class="small">${esc(r.got)}</td>
+    <td class="small muted">${esc(r.want)}</td></tr>`).join('');
+  $('#revTable').querySelector('tbody').innerHTML = trs;
+
+  const g = Object.entries(a.gScore).sort((x,y)=>y[1]-x[1]).slice(0,3)
+    .map(([k,v])=>`${k} ${v}`).join('　·　');
+  const lowConf = a.gConf < 1.4;
+  $('#revMetrics').innerHTML = `
+    <div class="small muted" style="line-height:1.9">
+      <b>文体初判</b>：<b>${a.genre}</b>
+      　（关键词得分：${g || '无明显特征词'}｜置信度 ${a.gConf.toFixed(2)}×）
+      ${lowConf?'　<span class="warn-mark">置信度偏低，请在上面手动确认文体</span>':''}
+      ${a.genre==='AVOID'?'　<span class="warn-mark">该文体仅 3 篇样本，手册规则未达 R 级</span>':''}
+      ${a.genre==='MISC'?'　<span class="warn-mark">特征不明显，按 STD 骨架走但去掉标准段</span>':''}<br>
+      <b>标点</b>：全角逗号 ${a.fwComma} ／ 半角 ${a.hwComma}${a.hwComma? '　<span class="warn-mark">半角逗号需统一为全角</span>':''}
+      　·　emoji ${a.emoji} 个<br>
+      <b>标题</b>：${a.title? esc(a.title) : '（未识别，首行不像标题）'}
+    </div>`;
+  $('#revReport').style.display = 'block';
+}
+
+function genreBlock(genre){
+  const gm = D.genre_manual || {};
+  let out = '';
+  if(gm._howto) out += gm._howto + '\n\n';
+  if(gm[genre]) out += gm[genre] + '\n\n';
+  if(gm._table) out += '【跨文体对照（供参考，不要套用别的文体）】\n' + gm._table;
+  return out;
+}
+
+function revisePrompt(text, genre, level, a){
+  const lv = {light:'轻度：只改违反 KB2 的项，尽量保留原句与原顺序，不大改结构。',
+              normal:'常规：按手册重整段落与小标题，统一语气与标点，保留原有的信息与例子。',
+              deep:'重度：按手册重写结构与表达方式（可重新切节、重写过渡句），但事实与例子不得改变。'};
+  return `你是《质量与标准化》杂志的资深编辑，现在要按【这位作者本人的风格规则】修改一篇已写好的稿件。
+
+【硬约束 · 违反即失败】
+1. 不得改动任何标准号、编号、数值、限值、日期、机构名、检测数据、结论方向。
+2. 不得新增原文没有的事实、案例、数据、来源。
+3. 不得删除原文的实质信息（例子、风险提醒、适用边界都要保留）。
+4. 不得整句照搬任何历史语料（你只看得到规则，看不到历史原文）。
+5. 不要加"综上所述""由此可见""值得注意的是"这类书面连接。
+
+【KB2 风格规则（${(D.targets||{}).kb2_ver||''} · 基准 ${(D.targets||{}).kb2_base||''} 篇实测）】
+${D.rules_text}
+
+【本篇文体：${genre} · 按该文体手册改】
+${genreBlock(genre)}
+
+【本次体检发现的偏离项（必须逐条修正）】
+${checkRules(a, genre).filter(r=>!r.ok).map(r=>`- ${r.code} ${r.name}｜现状：${r.got}`).join('\n') || '（无）'}
+
+【改稿力度】${lv[level]}
+
+【原文】
+${text}
+
+【输出要求】
+直接输出修改后的完整正文，不要任何解释、不要前后缀、不要"以下是修改稿"之类的话。
+标题单独一行；小标题单独一行并用 **加粗** 标记；其余为正文段落。
+字数目标 ${(T.chars||[1000,1400])[0]}–${(T.chars||[1000,1400])[1]} 字。`;
+}
+
+async function runCheck(){
+  const text = $('#revText').value.trim();
+  if(!text){ svcMsg('#revMsg','请先粘贴或上传待改文章', true); return null; }
+  const a = analyze(text);
+  const g = $('#revGenre').value || a.genre;
+  a.genreFinal = g;
+  renderCheck(a, checkRules(a, g));
+  svcMsg('#revMsg', `体检完成：${a.chars} 字 / ${a.paras} 段 / 判定文体 ${g}`);
+  window.__revA = a;
+  const mt = $('#revText');
+  return a;
+}
+
+async function reviseNow(){
+  const a = await runCheck();
+  if(!a) return;
+  const text = $('#revText').value.trim();
+  const genre = a.genreFinal;
+  const level = $('#revLevel').value;
+  const btn = $('#revGo'); btn.disabled = true; btn.textContent = '改稿中…';
+  svcMsg('#revGoMsg','正在按手册改稿（一次独立请求）…');
+  try{
+    const out = await callModel([{role:'user', content: revisePrompt(text, genre, level, a)}], 0.35);
+    $('#revResult').value = out.trim();
+    $('#revOut').style.display = 'block';
+    $('#revOutMeta').textContent =
+      `文体 ${genre}　·　力度 ${level}　·　原文 ${a.chars} 字 → 改稿 ${out.replace(/\s/g,'').length} 字`;
+    svcMsg('#revGoMsg','改稿完成。可点③再体检一次做前后对比。');
+    $('#revOut').scrollIntoView({behavior:'smooth', block:'start'});
+  }catch(e){ svcMsg('#revGoMsg', e.message, true); }
+  finally{ btn.disabled = false; btn.textContent = '② 按手册改稿'; }
+}
+
+function compareTable(before, after){
+  const rows = [
+    ['字数', before.chars, after.chars],
+    ['段数', before.paras, after.paras],
+    ['平均段长', before.avg, after.avg],
+    ['感叹号', before.exc, after.exc],
+    ['小标题', before.heads, after.heads],
+    ['问句式小标题', before.headQ, after.headQ],
+    ['标准号', before.stds.length, after.stds.length],
+    ['来源标注', {module:'独立模块',inline:'行内',none:'无'}[before.src],
+                {module:'独立模块',inline:'行内',none:'无'}[after.src]],
+    ['emoji', before.emoji, after.emoji],
+  ];
+  const trs = rows.map(([k,b,c])=>{
+    const changed = String(b) !== String(c);
+    return `<tr><td>${k}</td><td class="small">${b}</td><td class="small ${changed?'ok-mark':''}">${c}${changed?' ←改':''}</td></tr>`;
+  }).join('');
+  return `<div class="card" style="background:#FBFBF9;margin:0">
+    <h2>改稿前后对照（本地计算）</h2>
+    <table><thead><tr><th style="width:130px">指标</th><th>改前</th><th>改后</th></tr></thead>
+    <tbody>${trs}</tbody></table></div>`;
+}
+
+async function recheck(){
+  const a2 = analyze($('#revResult').value);
+  const g = $('#revGenre').value || a2.genre;
+  renderCheck(a2, checkRules(a2, g));
+  if(window.__revA) $('#revCompare').innerHTML = compareTable(window.__revA, a2);
+  svcMsg('#revOutMsg','已重新体检，见上方报告与对照。');
+}
+
+async function dupCheck(){
+  svcMsg('#revGoMsg','查重中（与 79 篇历史语料比对连续 12 字）…');
+  try{
+    const r = await svc('/api/dupcheck', { text: $('#revText').value, n: 12 });
+    if(r.pass){ svcMsg('#revGoMsg', `查重通过：与历史语料无 ≥${r.n} 字连续重合`); $('#revDiffOut').innerHTML=''; return; }
+    const rows = r.hits.map(h=>`<tr><td class="small">${esc(h.src)}</td>
+      <td class="small">${h.snippet.length} 字</td>
+      <td class="small">${esc(h.snippet.slice(0,60))}…</td></tr>`).join('');
+    $('#revDiffOut').innerHTML = `<div class="card" style="border-left:3px solid #A32D2D;margin:14px 0 0">
+      <h2>⚠ 查重命中：${r.n_hits} 处</h2>
+      <p class="small">与历史语料连续重合最长 <b>${r.longest}</b> 字，超过 ${r.n} 字阈值即判疑似洗稿，必须改掉。</p>
+      <table><thead><tr><th style="width:190px">来源篇目</th><th style="width:70px">长度</th><th>重合片段</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+    svcMsg('#revGoMsg', `查重命中 ${r.n_hits} 处，最长 ${r.longest} 字`, true);
+  }catch(e){ svcMsg('#revGoMsg', e.message, true); }
+}
+
+async function diffList(){
+  const before = $('#revText').value.trim(), after = $('#revResult').value.trim();
+  if(!after){ svcMsg('#revDiffMsg','先完成改稿', true); return; }
+  svcMsg('#revDiffMsg','生成中…');
+  try{
+    const out = await callModel([{role:'user', content:
+`对比下面两稿，用中文列一份改动清单：逐条写「原文问题 → 改成了什么 → 依据哪条规则」。
+只列写作层面的改动（结构、语气、标点、来源标注、小标题），不要评价事实对错，不要复述全文。
+控制在 12 条以内，用无序列表。
+
+【原稿】
+${before}
+
+【改后稿】
+${after}`}], 0.2);
+    $('#revDiffOut').innerHTML = `<div class="card" style="background:#FBFBF9;margin:14px 0 0">
+      <h2>改动清单</h2><div class="small" style="white-space:pre-wrap;line-height:1.85">${esc(out.trim())}</div></div>`;
+    svcMsg('#revDiffMsg','已生成');
+  }catch(e){ svcMsg('#revDiffMsg', e.message, true); }
+}
+
+function revDownload(){
+  const txt = $('#revResult').value;
+  if(!txt){ svcMsg('#revOutMsg','还没有修订稿', true); return; }
+  downloadDocText(txt, '修订稿');
+}
+
+function on(sel, ev, fn){ const el = $(sel); if(el) el.addEventListener(ev, fn); }
+function showPage(id){
+  document.querySelectorAll('#page-write,#page-revise')
+    .forEach(el => el.style.display = (el.id === id ? '' : 'none'));
+  document.querySelectorAll('#modeTabs .tab')
+    .forEach(b => b.classList.toggle('on', b.dataset.page === id));
+}
+document.querySelectorAll('#modeTabs .tab').forEach(b => b.addEventListener('click', ()=>{
+  showPage(b.dataset.page);
+  window.scrollTo({top:0, behavior:'smooth'});
+}));
+
+on('#revCheck','click', runCheck);
+on('#revGo','click', reviseNow);
+on('#revRecheck','click', recheck);
+on('#revDup','click', dupCheck);
+on('#revDiff','click', diffList);
+on('#revDownload','click', revDownload);
+on('#revPickFile','click', ()=>{ const el=$('#revFileInput'); if(el) el.click(); });
+on('#revFileInput','change', e => revFiles(e.target.files));
+on('#revCopyRich','click', ()=>{
+  const t = $('#revResult').value;
+  if(!t){ svcMsg('#revOutMsg','还没有修订稿', true); return; }
+  copyRichText(t);
+});
+const revTa = $('#revText');
+if(revTa){
+  revTa.addEventListener('dragover', e=>{ e.preventDefault(); revTa.style.borderColor='#0F6E56'; });
+  revTa.addEventListener('dragleave', ()=>{ revTa.style.borderColor=''; });
+  revTa.addEventListener('drop', e=>{ e.preventDefault(); revTa.style.borderColor=''; revFiles(e.dataTransfer.files); });
+}
+
+async function revFiles(files){
+  if(!files || !files.length) return;
+  svcMsg('#revMsg','解析中…');
+  const parts = [];
+  for(const f of files){
+    try{
+      const r = await svc('/api/extract', null, await f.arrayBuffer(), f.name);
+      parts.push(r.text);
+    }catch(e){ parts.push(`【${f.name} 解析失败：${e.message}】`); }
+  }
+  const ta = $('#revText');
+  ta.value = (ta.value ? ta.value.replace(/\s*$/,'') + '\n\n' : '') + parts.join('\n\n');
+  svcMsg('#revMsg', `已载入 ${files.length} 个文件，可点「① 体检」`);
+}
+
 loadCfg();
 renderSteps();
 (function initStat(){
@@ -692,6 +1102,16 @@ textarea{min-height:150px;resize:vertical;line-height:1.7}
 .btn.ghost{background:transparent;color:var(--teal);border:1px solid var(--teal)}
 .btn.sm{padding:6px 12px;font-size:12.5px}
 .tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.tabs{display:flex;gap:6px;margin:0 0 14px}
+.tab{background:transparent;border:1px solid var(--line);border-radius:999px;
+  padding:7px 18px;font-size:13.5px;color:var(--muted);cursor:pointer;font-family:inherit}
+.tab.on{background:var(--teal);border-color:var(--teal);color:#fff}
+.ok-mark{color:#0F6E56;font-weight:600}
+.bad-mark{color:#A32D2D;font-weight:600}
+.warn-mark{color:#854F0B;font-weight:600}
+input[type=text],select{font-family:inherit}
+select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;
+  background:#fff;color:var(--ink);width:100%}
 #flash{font-size:12.5px}
 .step{border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:8px;background:var(--card)}
 .step .shead{display:flex;align-items:center;gap:8px;font-weight:500;font-size:13.5px}
@@ -721,6 +1141,11 @@ a{color:var(--teal)}
 <div class="wrap">
   <h1>科普写作台 <span class="tag t-o" id="liveBadge" style="display:none;vertical-align:middle"></span></h1>
   <div class="sub"><span id="subStat"></span>　·　<a href="index.html">← 返回知识库工作台</a></div>
+
+  <div class="tabs" id="modeTabs">
+    <button class="tab on" data-page="page-write">写新稿</button>
+    <button class="tab" data-page="page-revise">改稿体检</button>
+  </div>
 
   <div class="notice">
     <b>资料不足会直接停工。</b>本页不会在没有事实资料的情况下先写一版占位稿——这是刻意设计的。
@@ -758,6 +1183,7 @@ a{color:var(--teal)}
     </div>
   </div>
 
+<div id="page-write">
   <div class="card">
     <h2>写作任务</h2>
     <label>选题（一个主题，不要一串）</label>
@@ -860,6 +1286,82 @@ a{color:var(--teal)}
     </div>
   </div>
 </div>
+
+<div id="page-revise" style="display:none">
+  <div class="card">
+    <h2>改稿体检</h2>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+      把待改的文章粘进来 → 先<b>体检</b>（本地逐条对照 KB2 规则表与文体手册，不经过模型，结果客观可复算）
+      → 再决定要不要让它<b>按手册改稿</b>。改稿只动写法与结构，<b>标准号、限值、日期、结论一律不动</b>。
+    </div>
+    <label>待改文章正文</label>
+    <textarea id="revText" style="min-height:260px" placeholder="粘贴要改的稿件。也可以上传 docx / pdf / txt，或把文件拖到这里。"></textarea>
+    <div class="tools">
+      <input type="file" id="revFileInput" multiple accept=".docx,.doc,.dotx,.pdf,.txt,.md,.csv" style="display:none">
+      <button class="btn ghost sm" id="revPickFile">上传稿件（docx / pdf / txt）</button>
+      <button class="btn" id="revCheck">① 体检</button>
+      <span id="revMsg" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>文体（默认自动判定，可手动改）</label>
+        <select id="revGenre">
+          <option value="">自动判定</option>
+          <option value="STD">STD · 标准与热点解读</option>
+          <option value="HEALTH">HEALTH · 健康与营养科普</option>
+          <option value="SAFETY">SAFETY · 产品安全与使用提醒</option>
+          <option value="AVOID">AVOID · 消费避坑指南</option>
+          <option value="MISC">MISC · 其他</option>
+        </select>
+      </div>
+      <div><label>改稿力度</label>
+        <select id="revLevel">
+          <option value="light">轻度：只改违规项，保留大部分原句</option>
+          <option value="normal" selected>常规：按手册重整段落与语气</option>
+          <option value="deep">重度：按手册重写结构与表达（事实不动）</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="revReport" style="display:none">
+    <h2>体检报告</h2>
+    <div id="revScore"></div>
+    <div style="font-size:12.5px;color:var(--muted);margin:10px 0 6px">
+      逐条对照 KB2 规则（阈值与频率来自规则表实测）与文体手册要求：
+    </div>
+    <table id="revTable"><thead><tr>
+      <th style="width:70px">判定</th><th style="width:190px">规则</th>
+      <th style="width:150px">本文实测</th><th>门槛 / 依据</th></tr></thead><tbody></tbody></table>
+    <div id="revMetrics" style="margin-top:12px"></div>
+    <div class="tools" style="margin-top:12px">
+      <button class="btn" id="revGo">② 按手册改稿</button>
+      <button class="btn ghost" id="revDup">查重（与历史语料比对）</button>
+      <span id="revGoMsg" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+  </div>
+
+  <div class="card" id="revOut" style="display:none">
+    <h2>修订稿</h2>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px" id="revOutMeta"></div>
+    <textarea id="revResult" style="min-height:320px"></textarea>
+    <div class="tools">
+      <button class="btn" id="revRecheck">③ 对修订稿再体检一次</button>
+      <button class="btn ghost" id="revCopyRich">复制带格式</button>
+      <button class="btn ghost" id="revDownload">下载 Word 文档</button>
+      <span id="revOutMsg" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+    <div id="revCompare" style="margin-top:12px"></div>
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;font-size:13px">看改动说明（可选，需再发一次请求）</summary>
+      <div class="tools" style="margin-top:8px">
+        <button class="btn ghost sm" id="revDiff">生成改动清单</button>
+        <span id="revDiffMsg" style="font-size:12.5px;color:var(--muted)"></span>
+      </div>
+      <div id="revDiffOut" style="margin-top:8px"></div>
+    </details>
+  </div>
+</div>
+</div>
 <script id="DATA" type="application/json">__DATA__</script>
 <script>
 __JS__
@@ -878,10 +1380,12 @@ def main():
     prompts = B.load_prompts(args.project)
     corpus = B.load_corpus(args.project)
     st = B.stats(corpus)
+    targets = kb2_targets(args.project)
     data = {
         "updated": datetime.date.today().isoformat(),
         "counted": st["counted"], "files": st["total"],
-        "p50": st["p50"], "words": "1300–1550",
+        "p50": st["p50"], "words": "1000–1400",
+        "targets": targets, "genre_manual": genre_manual(args.project),
         "variants_text": variants_text(),
         "rules_text": rules_text(),
         "ban_text": "\n".join("· " + plain(b) for b in B.BANLIST),
