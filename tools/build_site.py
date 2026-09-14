@@ -29,8 +29,200 @@ STATE = {
     "subtitle": "个人微信公众号科普写作风格库与规则库",
 }
 
-# ---------------------------------------------------------------- 规则（KB2 v0.2）
-RULES_R = [
+# ---------------------------------------------------------------- 规则（KB2 唯一事实来源）
+# 规则不再硬编码在本文件里 —— 页面直接从 KB2 主表 markdown 解析。
+# 原因：硬编码副本会与知识库脱节（曾出现页面显示 v0.2、知识库已是 v0.3 的情况）。
+def _kb2_dir(project):
+    return os.path.join(project, "10_知识库", "02_风格规则库")
+
+
+def _latest_rule_table(project):
+    d = _kb2_dir(project)
+    if not os.path.isdir(d):
+        return ""
+    cands = [f for f in os.listdir(d)
+             if f.startswith("风格规则表_v") and f.endswith(".md")]
+    if not cands:
+        return ""
+    def ver(name):
+        m = re.search(r"_v(\d+)\.(\d+)\.md$", name)
+        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    return os.path.join(d, sorted(cands, key=ver)[-1])
+
+
+def load_rule_table(project):
+    """解析 KB2 主表 → (R 列表, T 列表, O 列表, 版本号, 基准篇数)。
+
+    每条形如 (编号, 名称, 规则正文, 实测, 例外, 适用)。
+    """
+    path = _latest_rule_table(project)
+    if not path or not os.path.exists(path):
+        print("[警告] 未找到 KB2 规则表，规则页将为空")
+        return [], [], [], "", ""
+    text = open(path, encoding="utf-8").read()
+    ver = re.search(r"风格规则表\s*(v[\d.]+)", text)
+    ver = ver.group(1) if ver else ""
+    base = re.search(r"基准[：:]\s*\**(\d+)\s*篇", text)
+    base = base.group(1) if base else ""
+
+    def fields(block):
+        got = {}
+        for m in re.finditer(r"^-\s*\*\*(规则|实测|例外|适用|做法)\*\*[：:]\s*(.+)$",
+                             block, re.M):
+            got[m.group(1)] = m.group(2).strip()
+        return got
+
+    def bullets_to_rules(section):
+        out = []
+        if not section:
+            return out
+        # 以 ### 编号 开头的规则块
+        blocks = re.split(r"\n(?=###\s)", section)
+        for b in blocks:
+            m = re.match(r"###\s+([RT]-\d+)\s*[　\s]\s*(.+)", b.strip())
+            if not m:
+                continue
+            code, name = m.group(1), m.group(2).strip()
+            f = fields(b)
+            out.append((code, name,
+                        f.get("规则") or f.get("做法") or "—",
+                        f.get("实测", "—"),
+                        f.get("例外", "无"),
+                        f.get("适用", "全部变体")))
+        return out
+
+    def section_of(title):
+        m = re.search(r"^##\s*" + title + r".*?(?=\n##\s|\Z)", text, re.M | re.S)
+        return m.group(0) if m else ""
+
+    rules_r = bullets_to_rules(section_of(r"一、R 级"))
+    rules_t = bullets_to_rules(section_of(r"二、T 级"))
+
+    # O 级是表格：| O-01 | 观察 | 实测 | 处理 |
+    rules_o = []
+    for m in re.finditer(r"^\|\s*(O-\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|",
+                         section_of(r"三、O 级"), re.M):
+        rules_o.append((m.group(1), m.group(2), m.group(3), m.group(4)))
+    return rules_r, rules_t, rules_o, ver, base
+
+
+def load_rules_into_module(project=None):
+    """把 KB2 规则解析进模块级变量。build_writer 单独运行时会调用它。"""
+    global RULES_R, RULES_T, RULES_O, KB2_VER, KB2_BASE
+    if project is None:
+        project = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    RULES_R, RULES_T, RULES_O, KB2_VER, KB2_BASE = load_rule_table(project)
+    if not RULES_R and not RULES_T:
+        print("[警告] KB2 规则表解析为空，回落到内置副本")
+        RULES_R, RULES_T, RULES_O = RULES_R_FALLBACK, RULES_T_FALLBACK, RULES_O_FALLBACK
+    return RULES_R, RULES_T, RULES_O
+
+
+def _plain(s):
+    s = re.sub(r"\*\*|<em>|</em>|`", "", s or "")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _genre_table(project):
+    """从《文体变体手册》解析跨文体对照表 → {文体: {维度: 值}}"""
+    p = os.path.join(_kb2_dir(project), "文体变体手册_v0.1.md")
+    if not os.path.exists(p):
+        return {}, []
+    text = open(p, encoding="utf-8").read()
+    m = re.search(r"##\s*五、跨文体对照表.*?(?=\n##\s|\Z)", text, re.S)
+    if not m:
+        return {}, []
+    rows, header = [], []
+    for line in m.group(0).splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not header:
+            header = cells[1:]
+            continue
+        if set("".join(cells)) <= set("-: "):
+            continue
+        rows.append(cells)
+    # table 按【文体】索引，内层键是行标签（篇幅、标准数……）
+    table = {}
+    for r in rows:
+        if len(r) < 2:
+            continue
+        for i, g in enumerate(header):
+            table.setdefault(g, {})[r[0]] = r[i + 1] if i + 1 < len(r) else ""
+    # 返回的第二个值是**文体名列表**（不是行标签）
+    return table, header
+
+
+def kb2_injection(project):
+    """由 KB2 主表 + 文体变体手册**自动生成**提示词注入区。
+
+    手写这份注入文案必然会漂移（曾出现提示词还是 v0.2、知识库已是 v0.3），
+    所以改成生成：`build_site.py --sync-prompt` 会把结果写回两份系统提示词。
+    """
+    R, T, O, ver, base = load_rule_table(project)
+    out = [f"【KB2 {ver} · 基准 {base} 篇 · 由 build_site.py --sync-prompt 自动生成】", ""]
+    out.append("【R 级 · 默认执行，无条件遵守】")
+    for code, name, rule, ev, exc, scope in R:
+        line = f"{code} {name}｜{_plain(rule)}｜依据：{_plain(ev)}"
+        if _plain(exc) not in ("", "无", "—"):
+            line += f"｜例外：{_plain(exc)}"
+        if _plain(scope) not in ("", "全部变体"):
+            line += f"｜适用：{_plain(scope)}"
+        out.append(line)
+    out.append("")
+    out.append("【T 级 · 默认执行，允许偏离】")
+    for code, name, rule, ev, exc, scope in T:
+        line = f"{code} {name}｜{_plain(rule)}｜依据：{_plain(ev)}"
+        if _plain(scope) not in ("", "全部变体"):
+            line += f"｜适用：{_plain(scope)}"
+        out.append(line)
+    out.append("")
+    if O:
+        out.append("【O 级 · 仅观察，不强制】")
+        for code, name, ev, how in O:
+            out.append(f"{code} {name}｜{_plain(ev)}（{_plain(how)}）")
+        out.append("")
+    table, keys = _genre_table(project)
+    if table:
+        # table 是按「文体」索引的，行标签要从任一文体里取（曾把行列判反，导致表体为空）
+        row_labels = set(table[keys[0]]) if keys else set()
+        order = [k for k in ("篇幅（中位）", "段长（中位）", "标准数（中位）", "带问号标题",
+                             "有来源标注", "独立来源模块", "问句式小标题", "emoji")
+                 if k in row_labels]
+        head = "｜".join(keys)
+        out.append("【变体配方（先判文体，再定写法）】")
+        out.append(f"维度｜{head}")
+        for k in order:          # k 是行标签（篇幅…），g 是文体
+            vals = "｜".join(_plain(table[g].get(k, "")) for g in keys)
+            out.append(f"{k}｜{vals}")
+        out.append("判歧义取更靠前的文体：STD > AVOID > HEALTH > SAFETY；"
+                   "样本不足的文体（AVOID 3 篇）须先提示用户。")
+    return "\n".join(out).strip()
+
+
+def sync_prompt_files(project):
+    """把生成好的注入区写回两份系统提示词。"""
+    block = kb2_injection(project)
+    changed = []
+    d = os.path.join(project, "20_工作流")
+    for fn in ("系统提示词_完整版.md", "系统提示词_压缩版.md"):
+        p = os.path.join(d, fn)
+        if not os.path.exists(p):
+            continue
+        text = open(p, encoding="utf-8").read()
+        if "<<<KB2_RULES_START>>>" not in text:
+            continue
+        new = re.sub(r"<<<KB2_RULES_START>>>.*?<<<KB2_RULES_END>>>",
+                     "<<<KB2_RULES_START>>>\n" + block + "\n<<<KB2_RULES_END>>>",
+                     text, flags=re.S)
+        if new != text:
+            open(p, "w", encoding="utf-8").write(new)
+            changed.append(fn)
+    return changed
+
+
+RULES_R_FALLBACK = [
     ("R-01", "开篇", "第 1 段 30–110 字，只写<em>时令 / 生活动作 / 人群情境</em>；主题在第 2–3 句出现；段内不出现标准号，不出现“标准”“规定”字样。", "23/23（100%）", "无", "全部变体"),
     ("R-02", "标准引用", "引用标准必用 <em>《标准全称》（编号）</em>，不写简称、不省编号。", "21/23（91%）", "2 篇未用", "STD 类（HEALTH 可放宽）"),
     ("R-03", "资料密度", "每篇正文至少引 1 个带编号标准，常见 2 个、最多 6 个；每个都要在正文里被解释，不堆砌。", "23/23", "无", "全部变体"),
@@ -42,7 +234,7 @@ RULES_R = [
     ("R-09", "符号", "用 1 个语义 emoji 做要点/小标题锚点（🌞 分类、📖 来源、👀、📦）；每处只 1 个，不堆叠。", "18/23（78%）", "5 篇未用", "全部变体"),
 ]
 
-RULES_T = [
+RULES_T_FALLBACK = [
     ("T-01", "标题", "属固定系列/栏目的稿件，标题写成 <em>系列名｜副标题</em>，仅此一处用竖线。", "全库 9/23，系列内 9/9", "非系列稿不用竖线", "系列/栏目稿"),
     ("T-02", "小标题", "至少一个小标题用问句。", "17/23（74%）", "—", "全部变体"),
     ("T-03", "引导词", "引标准用“依据/根据/按照”，不用“有研究表明”“据悉”。", "14/23（61%）", "—", "全部变体"),
@@ -52,13 +244,17 @@ RULES_T = [
     ("T-07", "图注", "图片下方标注来源或说明，格式“标准号：说明”或“（图源：××）”。", "11/23（48%）", "—", "全部变体"),
 ]
 
-RULES_O = [
+RULES_O_FALLBACK = [
     ("O-01", "数字口诀归纳（“三不原则”“两要两不要”）", "3/23", "效果好，未达门槛，不入库"),
     ("O-02", "标题用箭头 → / ⟶ 收尾", "7/23（30%）", "偏攻略式稿件的习惯，未达门槛"),
     ("O-03", "「专家建议」「专家提醒」作小标题", "2/23", "<b>不是禁用词</b>——作者确实会写，但内容须可溯源"),
     ("O-04", "「那点事」副标题用诗句/文言", "3/7（系列内）", "系列内恰半，不作规则"),
     ("O-05", "抒情型开篇（“金叶随风翻涌，如浪如瀑”）", "2/23", "归入变体 E，样本不足"),
 ]
+
+# 运行期由 load_rule_table() 填充；解析失败时回落到 *_FALLBACK
+RULES_R, RULES_T, RULES_O = [], [], []
+KB2_VER, KB2_BASE = "", ""
 
 BANLIST = [
     "独特比喻与自创说法：「剥洋葱」快递、“衣橱大换血”、“小山丘”、“涂了个寂寞”、食品界的“变形金刚”、马海毛的“柔光滤镜”",
@@ -539,15 +735,27 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--project", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--sync-prompt", action="store_true",
+                    help="把 KB2 规则重新生成并写回两份系统提示词的注入区")
     args = ap.parse_args()
+
+    if args.sync_prompt:
+        changed = sync_prompt_files(args.project)
+        print("[已同步] 系统提示词注入区：" + ("、".join(changed) if changed else "无变化"))
+        return 0
 
     corpus = load_corpus(args.project)
     prompts = load_prompts(args.project)
     st = stats(corpus)
 
+    load_rules_into_module(args.project)
+    print(f"  KB2 {KB2_VER} 解析成功：R {len(RULES_R)} 条 · T {len(RULES_T)} 条"
+          f" · O {len(RULES_O)} 条（基准 {KB2_BASE} 篇）")
+
     data = {
         "updated": datetime.date.today().isoformat(),
         "counted": st["counted"], "total": st["total"],
+        "kb2_ver": KB2_VER, "kb2_base": KB2_BASE,
         "rules_r": RULES_R, "rules_t": RULES_T, "rules_o": RULES_O,
         "banlist": BANLIST, "variants": VARIANTS,
         "checklist": CHECKLIST, "accept": ACCEPT,

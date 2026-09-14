@@ -34,8 +34,14 @@ IMG_LINE = re.compile(r"^\[\[图片\]\]$")
 IMG_INLINE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 SRC_HEAD = re.compile(r"^(内容来源|内容参考|资料来源|参考资料)[:：]?$")
 CJK = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
-# 明确的图片版权/图注署名
-CREDIT_PAT = re.compile(r"(图片来源|图源|图片来自|来源图|图注|图片拍摄|摄影)[:：]")
+# 明确的图片版权/图注署名。
+# 必须同时覆盖带冒号（图片来源：xx）与不带冒号的套话（图片来源于网络）——
+# 后者曾在 24 篇里残留，混进正文还会被当成"末段"。
+CREDIT_STRONG = re.compile(
+    r"(图片来源|图源|图片来自|图片来源于|来源图|图注|图片拍摄|摄影)[:：]?")
+CREDIT_WEAK = re.compile(r"(来自网络|来源于网络|来源网络)[:：]?")
+# 来源标注（内容来源：xxx）不是图注，必须保住 —— KB2 的"必有来源标注"规则要靠它
+SRC_PREFIX = re.compile(r"^(内容来源|内容参考|资料来源|参考资料|来源)[:：]")
 # 图注典型形态：以标准号/编号开头，后接冒号与指标名（如 "DBS 44/005-2024：感官指标"）
 STDNO_CAPTION = re.compile(
     r"^(?:GB/?T?|ISO|IEC|DBS?|SB/T|QB/T|NY/T|T/[A-Z]{2,8}|JJF)"
@@ -54,9 +60,15 @@ def is_caption(line, near_img):
     s = line.strip()
     if not s or len(s) > 60:
         return False
-    if SRC_HEAD.match(s) or s.startswith("**"):
+    if SRC_HEAD.match(s) or SRC_PREFIX.match(s) or s.startswith("**"):
         return False
-    if CREDIT_PAT.search(s):
+    # 显式带"图片/图/摄影"的署名：还要求署名前面基本没别的字，
+    # 否则可能是"正文…… | 图片来自电商平台"这种被粘在一起的行，删了会丢正文
+    m = CREDIT_STRONG.search(s)
+    if m and len(s[:m.start()].strip()) <= 6:
+        return True
+    # 裸"来源于网络"这类：必须是短行（≤22 字），否则可能是正文里的句子
+    if len(s) <= 22 and CREDIT_WEAK.search(s):
         return True
     if STDNO_CAPTION.match(s):
         return True

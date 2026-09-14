@@ -29,17 +29,27 @@ import pwa_assets  # noqa: E402  让网页可以"安装成应用"
 
 
 def plain(s):
-    return re.sub(r"</?em>", "", s)
+    """去掉强调标记：提示词里不该出现 <em> 与 **（KB2 用 ** 标注实测数据）。"""
+    s = re.sub(r"</?em>", "", s or "")
+    s = s.replace("**", "")
+    return re.sub(r"`", "", s)
 
 
 def rules_text():
+    # 规则表的解析结果在 build_site 的模块级变量里；build_writer 单独运行时
+    # 必须自己先解析一次，否则这里会拿到空列表（曾因此产出"没有规则的规则卡"）。
+    if not B.RULES_R and not B.RULES_T:
+        B.load_rules_into_module()
+    if not B.RULES_R:
+        print("[警告] KB2 规则为空 —— 写作台的规则卡可能不完整，请检查规则表格式")
     lines = ["【R 级 · 默认执行】"]
     for r in B.RULES_R:
-        lines.append(f"{r[0]} {r[1]}｜{plain(r[2])}｜频率 {r[3]}｜适用 {r[5]}")
+        lines.append(f"{r[0]} {r[1]}｜{plain(r[2])}｜频率 {plain(r[3])}｜适用 {plain(r[5])}")
     lines.append("")
     lines.append("【T 级 · 倾向，允许偏离】")
     for r in B.RULES_T:
-        lines.append(f"{r[0]} {r[1]}｜{plain(r[2])}｜频率 {r[3]}")
+        lines.append(f"{r[0]} {r[1]}｜{plain(r[2])}｜频率 {plain(r[3])}"
+                     f"｜适用 {plain(r[5])}")
     lines.append("")
     lines.append("【不可照搬（防洗稿硬约束）】")
     for b in B.BANLIST:
