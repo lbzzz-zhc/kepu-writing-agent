@@ -498,10 +498,34 @@ async function svc(path, payload, raw, filename){
 
 async function checkSvc(){
   svcMsg('#svcMsg','检测中…');
-  try{ const r = await svc('/api/restat', {});
-    svcMsg('#svcMsg', `本地服务正常 · 当前语料 ${r.counted} 篇`);
+  try{
+    const p = await svc('/api/ping', {});
+    if(p.need_restart){
+      svcMsg('#svcMsg',
+        `⚠ 本地服务是旧版本（服务启动于 ${p.started_at}，代码更新于 ${p.code_mtime}）。` +
+        `请关掉那个黑窗口，再双击「科普写作台（本地启动）」重新打开，否则入库后工作台不会自动更新。`, true);
+    }else{
+      svcMsg('#svcMsg', `本地服务正常 v${p.version} · 知识库 ${p.files} 个文件 / 计入 ${p.counted} 篇`);
+    }
+    const r = await svc('/api/restat', {});
     renderRestat(r, '#restatOut');
   }catch(e){ svcMsg('#svcMsg', e.message, true); }
+}
+
+/* 页面打开时静默探一次本地服务：让"当前语料 N 篇"始终是实时的 */
+async function syncBadge(){
+  try{
+    const p = await svc('/api/ping', {});
+    const el = $('#liveBadge');
+    if(el){
+      el.style.display = 'inline-block';
+      el.className = 'tag ' + (p.need_restart ? 't-t' : 't-r');
+      el.textContent = p.need_restart
+        ? `本地服务待重启（语料 ${p.counted} 篇）`
+        : `已连本地服务 · 语料 ${p.counted} 篇`;
+      el.title = `服务 v${p.version}｜启动 ${p.started_at}｜代码 ${p.code_mtime}`;
+    }
+  }catch(e){ /* 没起服务就静默跳过 */ }
 }
 
 async function handleFiles(files){
@@ -541,6 +565,23 @@ async function ingest(){
       </div>`;
     svcMsg('#ingMsg', `完成：成功 ${r.ok} 篇`);
     if(r.restat) renderRestat(r.restat, '#restatOut');
+    if(r.rebuilt){
+      const bar = $('#ingOut');
+      bar.insertAdjacentHTML('afterbegin', `
+        <div class="card" style="margin:14px 0 0;border-left:3px solid var(--ok,#0F6E56)">
+          <h2>知识库已同步</h2>
+          <p class="small">新语料已写入、特征已重算、<b>展示台与写作台的页面已重建</b>。
+          当前这页的数据还是旧的，刷新一次即可看到最新统计。</p>
+          <div class="tools">
+            <button class="btn" id="reloadNow">立即刷新页面</button>
+            <a class="btn ghost" href="index.html" target="_blank" rel="noopener">打开展示台看新语料</a>
+          </div>
+        </div>`);
+      const rl = $('#reloadNow');
+      if(rl) rl.addEventListener('click', ()=>location.reload());
+    }else if(r.note){
+      svcMsg('#ingMsg', r.note, true);
+    }
   }catch(e){ svcMsg('#ingMsg', e.message, true); }
   finally{ btn.disabled = false; btn.textContent = '抓取并入库'; }
 }
@@ -575,6 +616,12 @@ async function rebuild(){
 
 loadCfg();
 renderSteps();
+(function initStat(){
+  const el = $('#subStat');
+  if(el) el.textContent = `按 ${D.counted} 篇语料提炼的风格规则生成公众号科普推文`
+    + `（篇幅中位 ${D.p50} 字，目标 ${D.words||'1300–1550'} 字）`;
+})();
+syncBadge();
 /* 空值保护：某个元素不存在时不要连带废掉后面的绑定 */
 function on(sel, ev, fn){ const el = $(sel); if(el) el.addEventListener(ev, fn); }
 on('#go','click', run);
@@ -652,8 +699,8 @@ a{color:var(--teal)}
 </head>
 <body>
 <div class="wrap">
-  <h1>科普写作台</h1>
-  <div class="sub">按你 23 篇语料提炼的风格规则生成公众号科普推文　·　<a href="index.html">← 返回知识库工作台</a></div>
+  <h1>科普写作台 <span class="tag t-o" id="liveBadge" style="display:none;vertical-align:middle"></span></h1>
+  <div class="sub"><span id="subStat"></span>　·　<a href="index.html">← 返回知识库工作台</a></div>
 
   <div class="notice">
     <b>资料不足会直接停工。</b>本页不会在没有事实资料的情况下先写一版占位稿——这是刻意设计的。
@@ -809,8 +856,12 @@ def main():
     args = ap.parse_args()
 
     prompts = B.load_prompts(args.project)
+    corpus = B.load_corpus(args.project)
+    st = B.stats(corpus)
     data = {
         "updated": datetime.date.today().isoformat(),
+        "counted": st["counted"], "files": st["total"],
+        "p50": st["p50"], "words": "1300–1550",
         "variants_text": variants_text(),
         "rules_text": rules_text(),
         "ban_text": "\n".join("· " + plain(b) for b in B.BANLIST),

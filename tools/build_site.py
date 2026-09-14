@@ -179,12 +179,35 @@ def esc(s):
 
 
 def load_corpus(project):
+    """读语料特征。缓存缺失或损坏时**直接扫描 KB1 兜底**。
+
+    曾经这里在缓存缺失时 `return []`——结果是"静默失败"：
+    页面照常生成，但语料库一栏是空的，看不出哪里错了。
+    这里改为兜底扫描，宁可慢一点，也不产出空页面。
+    """
     path = os.path.join(project, "_corpus_features.json")
-    if not os.path.exists(path):
-        # 退回到：直接扫描 KB1
+    items = None
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                items = json.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[警告] 统计缓存损坏，改用直接扫描：{exc}")
+    if items is None:
+        kb1 = os.path.join(project, "10_知识库", "01_历史语料库")
+        if os.path.isdir(kb1):
+            try:
+                import corpus_digest as C  # 同目录
+                items = [C.parse(os.path.join(kb1, f))
+                         for f in sorted(os.listdir(kb1))
+                         if f.startswith("KB1-") and f.endswith(".md")]
+                print(f"[提示] 未找到统计缓存，已直接扫描 KB1 得到 {len(items)} 篇"
+                      f"（建议先跑 corpus_digest.py 生成缓存）")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[警告] 兜底扫描失败：{exc}")
+    if not items:
+        print("[警告] 语料为空 —— 页面将不显示任何语料，请检查 KB1 与统计缓存")
         return []
-    with open(path, encoding="utf-8") as fh:
-        items = json.load(fh)
     out = []
     for i in items:
         out.append({

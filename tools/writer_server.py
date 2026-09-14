@@ -24,13 +24,19 @@
 
 import argparse
 import base64
+import datetime
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+
+# 每次改动本文件请+1。页面用它判断"服务是不是旧版本，需要重启"。
+SERVER_VERSION = "1.3"
+SERVER_STARTED = time.time()
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -241,9 +247,48 @@ def api_restat():
 
 
 def features_path():
-    """统计缓存的位置由 KB1 的上级目录推导，避免测试时写错项目文件。"""
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(KB1))),
+    """统计缓存必须落在工程根目录 —— 与 build_site.py 读取的位置保持一致。
+
+    历史 bug：这里曾写成 dirname 三次，落到工程的**上一层**，
+    于是"入库 → 重算统计"写的是一处、"重建页面"读的是另一处，
+    结果工作台永远显示旧数据（实测缓存里 80 篇、页面只有 24 篇）。
+    KB1 = <工程>/10_知识库/01_历史语料库，所以向上两级才是工程根。
+    """
+    return os.path.join(os.path.dirname(os.path.dirname(KB1)),
                         "_corpus_features.json")
+
+
+def api_ping():
+    """服务自检：版本、启动时间、语料数，以及"代码是否比进程新"。
+
+    为什么要"代码是否比进程新"
+        服务一旦启动，跑的就是启动那一刻的代码。之后我改了脚本，
+        你那边不重启就还是旧逻辑（实测踩过：入库不重建页面）。
+        这里把磁盘上脚本的修改时间与进程启动时间比一比，页面上直接提示重启。
+    """
+    try:
+        code_mtime = os.path.getmtime(os.path.abspath(__file__))
+    except OSError:
+        code_mtime = 0
+    n_files = len([f for f in os.listdir(KB1)
+                   if f.startswith("KB1-") and f.endswith(".md")]) if os.path.isdir(KB1) else 0
+    n_counted = 0
+    fp = features_path()
+    if os.path.exists(fp):
+        try:
+            with open(fp, encoding="utf-8") as fh:
+                n_counted = len(json.load(fh))
+        except Exception:
+            pass
+    return {
+        "version": SERVER_VERSION,
+        "started_at": datetime.datetime.fromtimestamp(SERVER_STARTED).strftime("%Y-%m-%d %H:%M"),
+        "code_mtime": datetime.datetime.fromtimestamp(code_mtime).strftime("%Y-%m-%d %H:%M"),
+        "need_restart": code_mtime > SERVER_STARTED + 1,
+        "kb1": KB1,
+        "files": n_files,
+        "counted": n_counted,
+    }
 
 
 def run_script(name, *argv):
@@ -327,6 +372,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.h_ingest()
             if path == "/api/restat":
                 return self.h_json(200, api_restat())
+            if path == "/api/ping":
+                return self.h_json(200, api_ping())
             if path == "/api/rebuild":
                 return self.h_rebuild()
             self.send_error(404, "not found")
@@ -376,14 +423,22 @@ class Handler(BaseHTTPRequestHandler):
         results = api_ingest(urls, dry_run=bool(payload.get("dry_run")),
                              genre_override=str(payload.get("genre") or ""))
         ok = sum(1 for r in results if r["ok"])
-        # 入库后重算统计 + 重建台账
-        restat = None
+        # 入库后：重算统计 + 重建台账 + **重建页面**
+        # 页面数据是烤进 HTML 的，不重建就等于"知识库更新了但工作台看不到"。
+        restat, rebuilt, note = None, False, ""
         if ok and not payload.get("dry_run"):
             run_script("kb_index.py", KB1, "--fix", "--csv")
             run_script("corpus_digest.py", KB1, "--json", features_path())
             restat = api_restat()
+            a = run_script("build_site.py", "--project", PROJECT, "--out", DOCS)
+            b = run_script("build_writer.py", "--project", PROJECT, "--out", DOCS)
+            rebuilt = a[0] == 0 and b[0] == 0
+            if not rebuilt:
+                note = ("页面重建失败（数据已入库，可点「重建页面」重试）："
+                        + (a[2] or b[2])[-160:])
         self.h_json(200, {"results": results, "ok": ok, "fail": len(results) - ok,
-                          "restat": restat, "kb1": KB1})
+                          "restat": restat, "rebuilt": rebuilt, "note": note,
+                          "kb1": KB1})
 
     def h_rebuild(self):
         a = run_script("build_site.py", "--project", PROJECT, "--out", DOCS)
