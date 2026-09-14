@@ -258,7 +258,54 @@ def main():
         if tot:
             w(f"- `{word}`：{tot} 次 / {docs} 篇")
     w()
-    w("## 七、标点与符号")
+    w("## 七、修辞与表达手法（怎么把术语讲成人话）")
+    w()
+    RHET = [
+        ("比喻/类比", ["就像", "好比", "相当于", "如同", "犹如", "仿佛"]),
+        ("对比/辨析", ["VS", "vs", "相比", "区别在于", "区别于", "不同于", "不如"]),
+        ("举例", ["比如", "例如", "举个例子", "为例", "譬如"]),
+        ("设问/追问", ["呢？", "吗？", "为什么", "怎么办", "如何", "究竟"]),
+        ("数字/口诀式归纳", ["三不", "两要两不要", "第一步", "首先", "其次", "一是", "二是",
+                            "三步", "四看", "一看", "二看"]),
+        ("下定义", ["是指", "指的是", "定义为", "即为"]),
+        ("留余地", ["可能", "通常", "往往", "一般", "相对", "较为", "多数"]),
+        ("绝对化（越少越好）", ["绝对", "一定能", "必然", "百分之百", "彻底", "万能"]),
+    ]
+    w("| 手法 | 总次数 | 出现篇数 | 篇覆盖率 | 上下文样例 |")
+    w("|---|---|---|---|---|")
+    for label, keys in RHET:
+        tot = sum(allbody.count(k) for k in keys)
+        docs = sum(1 for i in counted if any(k in texts[i["file"]] for k in keys))
+        eg = ""
+        for k in keys:
+            idx = allbody.find(k)
+            if idx >= 0:
+                eg = allbody[max(0, idx - 12):idx + 18]
+                break
+        w(f"| {label} | {tot} | {docs} | {round(100*docs/max(n,1))}% | {eg} |")
+    w()
+    w("**风险与适用边界的表达**")
+    w()
+    RISK = [("条件式限定（若/一旦/前提是）", ["若", "如果", "一旦", "前提是", "条件下"]),
+            ("行动建议（建议/应当/务必）", ["建议", "应当", "需要", "务必", "注意"]),
+            ("谨慎表述（可能存在/仍有待）", ["可能存在", "有一定", "仍需", "有待", "不排除"]),
+            ("恐慌式表达（越少越好）", ["千万不要", "必死", "致命", "有毒", "千万别"])]
+    for label, keys in RISK:
+        tot = sum(allbody.count(k) for k in keys)
+        docs = sum(1 for i in counted if any(k in texts[i["file"]] for k in keys))
+        w(f"- {label}：{tot} 次 / {docs} 篇（{round(100*docs/max(n,1))}% 篇覆盖）")
+    w()
+    w("**情绪强度**")
+    w()
+    EMO = ["可怕", "焦虑", "担心", "惊喜", "惊艳", "暖心", "安心", "委屈", "难受", "划算"]
+    tot = sum(allbody.count(k) for k in EMO)
+    docs = sum(1 for i in counted if any(k in texts[i["file"]] for k in EMO))
+    w(f"- 情绪色彩词：{tot} 次 / {docs} 篇（{round(100*docs/max(n,1))}%）")
+    w(f"- 感叹号：全库 {allbody.count('！')} 处；"
+      f"{sum(1 for i in counted if i['excl'] == 0)}/{n} 篇零使用")
+    w(f"- 问号：全库 {allbody.count('？')} 处，篇均 {round(allbody.count('？')/max(n,1),1)} 处")
+    w()
+    w("## 八、标点与符号")
     w()
     w(f"- 全角逗号 {allbody.count('，')} ／ 半角逗号 {allbody.count(',')}")
     w(f"- 全角句号 {allbody.count('。')} ／ 分号 {allbody.count('；')}")
