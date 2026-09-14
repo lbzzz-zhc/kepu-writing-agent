@@ -498,18 +498,28 @@ async function svc(path, payload, raw, filename){
 
 async function checkSvc(){
   svcMsg('#svcMsg','检测中…');
-  try{
-    const p = await svc('/api/ping', {});
-    if(p.need_restart){
-      svcMsg('#svcMsg',
-        `⚠ 本地服务是旧版本（服务启动于 ${p.started_at}，代码更新于 ${p.code_mtime}）。` +
-        `请关掉那个黑窗口，再双击「科普写作台（本地启动）」重新打开，否则入库后工作台不会自动更新。`, true);
-    }else{
-      svcMsg('#svcMsg', `本地服务正常 v${p.version} · 知识库 ${p.files} 个文件 / 计入 ${p.counted} 篇`);
-    }
-    const r = await svc('/api/restat', {});
-    renderRestat(r, '#restatOut');
-  }catch(e){ svcMsg('#svcMsg', e.message, true); }
+  const RESTART = '请关掉那个黑窗口，再双击桌面「科普写作台（本地启动）」重新打开。'
+                + '（旧版服务不会在入库后自动重建页面，所以工作台看不到新语料）';
+  let ping = null;
+  try{ ping = await svc('/api/ping', {}); }
+  catch(e){
+    // /api/ping 不存在 = 服务是升级前的旧版本
+    try{
+      const r0 = await svc('/api/restat', {});
+      svcMsg('#svcMsg', `⚠ 本地服务是旧版本（不认识 /api/ping）。${RESTART}`, true);
+      renderRestat(r0, '#restatOut');
+      return;
+    }catch(e2){ svcMsg('#svcMsg', e2.message, true); return; }
+  }
+  if(ping.need_restart){
+    svcMsg('#svcMsg',
+      `⚠ 本地服务代码已更新，但服务还在跑旧代码（启动于 ${ping.started_at}，代码更新于 ${ping.code_mtime}）。`
+      + RESTART, true);
+  }else{
+    svcMsg('#svcMsg', `本地服务正常 v${ping.version} · 知识库 ${ping.files} 个文件 / 计入 ${ping.counted} 篇`);
+  }
+  const r = await svc('/api/restat', {});
+  renderRestat(r, '#restatOut');
 }
 
 /* 页面打开时静默探一次本地服务：让"当前语料 N 篇"始终是实时的 */
