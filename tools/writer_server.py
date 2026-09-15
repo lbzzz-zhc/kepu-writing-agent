@@ -286,10 +286,19 @@ def corpus_ngrams(n=12):
     return grams
 
 
+def norm_for_compare(text):
+    """查重前的归一化：去加粗标记 + 去空白。
+
+    单独抽成函数，供 /api/dupcheck 与命令行工具 tools/dupcheck.py 共用同一口径
+    （命令行那边还要用它定位书名号区间，判断重合是否落在标准/文件名称里）。
+    """
+    return re.sub(r"[\s\u3000]+", "", re.sub(r"\*+", "", text or ""))
+
+
 def api_dupcheck(text, n=12):
     """比对文本与 KB1，返回连续重合片段及来源篇目（合并后按长度排序）。"""
     grams = corpus_ngrams(n)
-    clean = re.sub(r"[\s\u3000]+", "", re.sub(r"\*+", "", text or ""))
+    clean = norm_for_compare(text)
     hits, i = [], 0
     while i <= len(clean) - n:
         g = clean[i:i + n]

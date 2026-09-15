@@ -263,6 +263,42 @@ BANLIST = [
     "全部标准号、限值、日期、检测数据 —— 每次写作必须重新核验，不得从历史语料继承",
 ]
 
+def load_deduct(project):
+    """解析 KB2《四、减法清单》→ [[编号, 项, 实测证据], …]
+
+    为什么解析而不是硬编码：改稿体检会报 `S-05` 这类编号，
+    若规则页显示的是另一份手抄副本，两边迟早对不上。
+    """
+    path = _latest_rule_table(project)
+    if not path or not os.path.exists(path):
+        return []
+    m = re.search(r"^##\s*四、减法清单.*?(?=\n##\s|\Z)",
+                  open(path, encoding="utf-8").read(), re.M | re.S)
+    if not m:
+        return []
+    out = []
+    for line in m.group(0).splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 3 and re.fullmatch(r"S-\d+", cells[0]):
+            out.append([re.sub(r"\*+", "", c) for c in cells[:3]])
+    return out
+
+
+def load_banlist(project):
+    """解析 KB2《五、不可照搬白名单》→ [条目, …]（解析失败回落内置副本）。"""
+    path = _latest_rule_table(project)
+    if path and os.path.exists(path):
+        m = re.search(r"^##\s*五、不可照搬白名单.*?(?=\n##\s|\Z)",
+                      open(path, encoding="utf-8").read(), re.M | re.S)
+        if m:
+            items = [re.sub(r"\*+", "", re.sub(r"^\d+\.\s*", "", l.strip()))
+                     for l in m.group(0).splitlines()
+                     if re.match(r"^\d+\.\s*\S", l.strip())]
+            if items:
+                return items
+    return BANLIST
+
+
 # ---------------------------------------------------------------- 变体（KB2 变体手册）
 VARIANTS = [
     {
@@ -749,6 +785,11 @@ document.getElementById('p-rules').innerHTML = `
   <table><thead><tr><th style="width:44%">观察</th><th style="width:14%">出现</th><th>结论</th></tr></thead>
   <tbody>${D.rules_o.map(r=>`<tr><td>${esc(r[1])}</td><td class="freq">${esc(r[2])}</td>
     <td class="muted">${r[3]}</td></tr>`).join('')}</tbody></table></div>
+<div class="card"><h2>减法清单 · 不写什么（这是风格的一半）</h2>
+  <p class="muted small">编号 <b>S-xx</b> 与改稿体检的输出一一对应：被判 <b>S</b> 或 <b>R</b> 都是必改项。</p>
+  <table><thead><tr><th style="width:70px">编号</th><th style="width:34%">不写</th><th>实测证据</th></tr></thead>
+  <tbody>${(D.deduct||[]).map(d=>`<tr><td><span class="tag t-r">${esc(d[0])}</span></td>
+    <td>${esc(d[1])}</td><td class="muted small">${esc(d[2])}</td></tr>`).join('')}</tbody></table></div>
 <div class="card"><h2>不可照搬项白名单（防洗稿硬约束）</h2>
   <ul class="ban small">${D.banlist.map(b=>`<li>${esc(b)}</li>`).join('')}</ul>
   <p class="small muted"><b>允许沿用</b>：段落长度区间、开篇锚点类型、小标题型态、来源模块结构、行文节奏、变体配方。</p></div>`;
@@ -871,7 +912,8 @@ def main():
         "counted": st["counted"], "total": st["total"],
         "kb2_ver": KB2_VER, "kb2_base": KB2_BASE,
         "rules_r": RULES_R, "rules_t": RULES_T, "rules_o": RULES_O,
-        "banlist": BANLIST, "variants": VARIANTS,
+        "banlist": load_banlist(args.project), "deduct": load_deduct(args.project),
+        "variants": VARIANTS,
         "checklist": CHECKLIST, "accept": ACCEPT,
         "corpus": corpus, "prompt": prompts,
         "handbook": load_handbook(args.project),

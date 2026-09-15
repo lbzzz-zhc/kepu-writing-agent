@@ -741,7 +741,11 @@ function analyze(text){
   const lens = body.map(l => l.length);
   const avg = lens.length ? Math.round(lens.reduce((a,b)=>a+b,0)/lens.length) : 0;
   const first = body[0] || '';
-  const heads = body.filter(l => l.length <= 22 && !/[。；！？，,]$/.test(l) && !/^\d+[.、]/.test(l));
+  /* 小标题口径必须与 corpus_digest.py 完全一致：
+     短行（≤22 字）且不以「。」结尾，排除 "1." 这类序号行。
+     历史 bug：这里曾把「。；！？，,」全部排除，导致以问号结尾的小标题永远数不到 ——
+     问句式小标题恒为 0，STD 的 T-01b 检查因此永远判违规。 */
+  const heads = body.filter(l => l.length <= 22 && !/。$/.test(l) && !/^\d+[.、]/.test(l));
   const headQ = heads.filter(l => /[？?]$/.test(l)).length;
   const stds = Array.from(new Set(joined.match(RE_STDNO) || []));
   const emoji = (joined.match(RE_EMOJI) || []).length;
@@ -754,6 +758,9 @@ function analyze(text){
     firstHasWord: /标准|规定/.test(first), heads: heads.length, headQ,
     exc: (joined.match(/[！!]/g)||[]).length,
     fwComma: (joined.match(/，/g)||[]).length, hwComma: (joined.match(/,/g)||[]).length,
+    /* 半角引号 / 撇号计数（KB2 减法清单 S-05：引号一律全角）。
+       语料实测：全库 284 对全角引号，仅 1 篇残留 4 个半角引号。 */
+    hwQuote: (joined.match(/[\u0022\u0027]/g)||[]).length,
     stds, emoji, srcModule, srcInline,
     src: srcModule ? 'module' : (srcInline ? 'inline' : 'none'),
     genre, gScore, gConf: gj.conf, conn: CONN.filter(w => joined.includes(w)),
@@ -780,6 +787,11 @@ function checkRules(a, genre){
   add('R','R-04','有来源标注（模块或行内）', a.src !== 'none',
       a.src==='module'?'独立来源模块':(a.src==='inline'?'行内“内容来源：”':'无'),
       '两种形态任选，必须有');
+  /* S-xx = KB2《四、减法清单》条目，与 R 级同属必改项 */
+  add('R','S-05','标点全角（引号与逗号都不用半角）',
+      a.hwQuote === 0 && a.hwComma === 0,
+      '半角引号 ' + a.hwQuote + ' 个 / 半角逗号 ' + a.hwComma + ' 个',
+      '引号用“”，逗号用， (KB2 减法清单 S-05)');
   add('T','T-01','加粗短句切节，≥3 个小标题',
       a.heads >= 3, a.heads + ' 个（其中问句 ' + a.headQ + ' 个）', '中位 6 个（区间 2–24）');
   add('T','T-03','篇幅 ' + lo + '–' + hi + ' 字', a.chars >= lo && a.chars <= hi,

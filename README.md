@@ -156,7 +156,7 @@ Service Worker 对**页面走网络优先**（保证刷新就能看到新版）�
 | `build_writer.py` | 生成写作台 `docs/writer.html` |
 | `writer_server.py` | 本地托管 + API 转接 + 文件解析 + 链接入库 + 统计重算 + 查重(12字)（**网页用，可选**） |
 | `check_draft.py` | **改稿体检（命令行）** —— 本地算、口径与网页同源，对话内可直接跑 |
-| `dupcheck.py` | **G3 查重（命令行）** —— 与 KB1 连续 12 字比对，命中列出源篇目 |
+| `dupcheck.py` | **G3 查重（命令行）** —— 与 KB1 连续 12 字比对；区分「实质重合」与「标准称谓串」，后者列出但不判命中（`--strict` 可恢复全严格） |
 | `style_report.py` | 风格体检报告（9 节，含时间分层）—— KB2 规则频率的唯一来源 |
 | `open_writer.py` | 一键起本地服务并打开浏览器 |
 | `push_to_github.py` | 经 REST API 增量推送（本机 `git push` 不可用时的通道） |
