@@ -1,5 +1,5 @@
 // 科普写作台 Service Worker —— 自动生成，勿手工编辑
-const CACHE = 'kepu-202610091406';
+const CACHE = 'kepu-202610091417';
 const PAGES = ['./', './index.html', './writer.html'];
 
 self.addEventListener('install', e => {

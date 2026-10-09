@@ -964,6 +964,12 @@ function analyze(text){
     /* 半角引号 / 撇号计数（KB2 减法清单 S-05：引号一律全角）。
        语料实测：全库 284 对全角引号，仅 1 篇残留 4 个半角引号。 */
     hwQuote: (joined.match(/[\u0022\u0027]/g)||[]).length,
+    /* 引号配对（同属 S-05）：左“与右”必须数量相等；直角引号「」不用。
+       为什么单独立一项：改稿删句子时最容易"删了后半句忘了删右引号"，
+       实测 2026-10-09 投稿出现 4 左 : 3 右，肉眼极难发现。 */
+    quoteOpen: (joined.match(/\u201c/g)||[]).length,
+    quoteClose: (joined.match(/\u201d/g)||[]).length,
+    quoteCorner: (joined.match(/[\u300c\u300d]/g)||[]).length,
     stds, emoji, srcModule, srcInline,
     src: srcModule ? 'module' : (srcInline ? 'inline' : 'none'),
     genre, gScore, gConf: gj.conf, conn: CONN.filter(w => joined.includes(w)),
@@ -995,6 +1001,11 @@ function checkRules(a, genre){
       a.hwQuote === 0 && a.hwComma === 0,
       '半角引号 ' + a.hwQuote + ' 个 / 半角逗号 ' + a.hwComma + ' 个',
       '引号用“”，逗号用， (KB2 减法清单 S-05)');
+  add('R','S-05c','引号成对（左“右”数量相等，不用直角引号「」）',
+      a.quoteOpen === a.quoteClose && a.quoteCorner === 0,
+      '左“' + a.quoteOpen + ' : 右”' + a.quoteClose
+        + (a.quoteCorner ? '　直角引号 ' + a.quoteCorner + ' 个' : ''),
+      '成对出现，语料全库 284 对全角引号');
   add('T','T-01','加粗短句切节，≥3 个小标题',
       a.heads >= 3, a.heads + ' 个（其中问句 ' + a.headQ + ' 个）', '中位 6 个（区间 2–24）');
   add('T','T-03','篇幅 ' + lo + '–' + hi + ' 字', a.chars >= lo && a.chars <= hi,
